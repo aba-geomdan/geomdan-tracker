@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="14" fill="#D88896" stroke="#8B6975" stroke-width="2"/>
+  <circle cx="16" cy="16" r="11" fill="#FAD5DA"/>
+  <line x1="16" y1="16" x2="16" y2="8" stroke="#8B6975" stroke-width="2" stroke-linecap="round"/>
+  <line x1="16" y1="16" x2="22" y2="16" stroke="#8B6975" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="16" cy="16" r="1.5" fill="#8B6975"/>
+</svg>
