@@ -1,13 +1,26 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ResponsiveContainer, ComposedChart, BarChart, Bar, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Area, AreaChart,
-  PieChart, Pie, Cell, RadialBarChart, RadialBar
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  RadialBarChart, RadialBar
 } from 'recharts';
 
+// ============================================
+// QABA 공식 규정 기준 데이터
+// ============================================
 const EXAM_DATA = {
-  'QBA': { total: 2000, directMax: 800, indirectMin: 1200, svTotal: 100, groupMax: 50, indivMin: 50 },
-  'QASP-S': { total: 1000, directMax: 400, indirectMin: 600, svTotal: 50, groupMax: 25, indivMin: 25 }
+  'QBA': {
+    total: 2000,            // 필드워크 총 시간
+    svPercent: 5,           // 슈퍼비전: 서비스의 5%
+    hasRoleDivision: false  // 역할 구분 없음
+  },
+  'QASP-S': {
+    total: 1000,                // 필드워크 총 시간
+    svPercent: 5,               // 슈퍼비전: 서비스의 5%
+    hasRoleDivision: true,      // 슈퍼바이저 역할 구분 있음
+    supervisorMin: 600,         // 슈퍼바이저/프로그램 개발 최소 600시간
+    serviceMax: 400             // 직접 서비스 최대 400시간
+  }
 };
 
 const ACTIVITY_TYPES = [
@@ -20,23 +33,94 @@ const C = {
   pinkSoft: '#FCEEF1', pinkPale: '#FDF7F9', plumDark: '#8B6975',
   pinkGold: '#F0C8A8', goldDeep: '#D4A574',
   goodGreen: '#7BAE7E', warnYellow: '#D4A85F', dangerRed: '#C53030',
-  groupBlue: '#A8B8D4', indivPurple: '#B49DC4',
   inputBg: '#FFFCEB', grayText: '#707070', grayHead: '#555555',
   bg: '#FAF7F8', white: '#FFFFFF'
 };
 
 const STORAGE_KEY = 'geomdan_aba_qualification_data';
 
+// 레거시 데이터 마이그레이션 (v3 → v4)
+const migrateData = (raw) => {
+  if (!raw) return null;
+  let migrated = false;
+  const d = { ...raw };
+
+  // 필드워크: direct 필드 → 역할 선택 + activities 정리
+  if (Array.isArray(d.fieldworkLogs)) {
+    d.fieldworkLogs = d.fieldworkLogs.map(log => {
+      const out = { ...log };
+      // direct 필드 제거 (v4에서 사용 안 함)
+      if ('direct' in out) {
+        delete out.direct;
+        migrated = true;
+      }
+      // notes 필드 제거 (필드워크는 메모 없음)
+      if ('notes' in out) {
+        delete out.notes;
+        migrated = true;
+      }
+      // activity 문자열 → activities 배열
+      if (out.activity && !out.activities) {
+        out.activities = out.activity.split(',').map(s => s.trim()).filter(Boolean);
+        migrated = true;
+      }
+      // role 필드 없으면 기본값 (QASP-S 사용자 대비)
+      if (!out.role) {
+        out.role = 'service';
+      }
+      return out;
+    });
+  }
+
+  // 슈퍼비전: group/individual → hours (합산)
+  if (Array.isArray(d.supervisionLogs)) {
+    d.supervisionLogs = d.supervisionLogs.map(log => {
+      const out = { ...log };
+      if (('group' in out || 'individual' in out) && !('hours' in out)) {
+        const g = Number(out.group) || 0;
+        const i = Number(out.individual) || 0;
+        out.hours = g + i;
+        delete out.group;
+        delete out.individual;
+        migrated = true;
+      }
+      return out;
+    });
+  }
+
+  // supervisors 배열 없으면 추가
+  if (!Array.isArray(d.supervisors)) {
+    d.supervisors = [];
+    migrated = true;
+  }
+
+  return { data: d, migrated };
+};
+
 const loadData = () => {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
-    if (s) return JSON.parse(s);
+    if (s) {
+      const raw = JSON.parse(s);
+      const result = migrateData(raw);
+      if (result && result.migrated) {
+        // 마이그레이션 후 즉시 저장
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(result.data)); } catch (e) {}
+      }
+      return result ? result.data : raw;
+    }
   } catch (e) {}
-  return { examType: 'QASP-S', superviseeName: '', mainSupervisor: '', startDate: '', fieldworkLogs: [], supervisionLogs: [] };
+  return {
+    examType: 'QASP-S',
+    superviseeName: '',
+    mainSupervisor: '',
+    supervisors: [],
+    startDate: '',
+    fieldworkLogs: [],
+    supervisionLogs: []
+  };
 };
 
-// ✅ FIX #1: 타임존 안전한 날짜 처리
-// "YYYY-MM-DD" → 로컬 시간 자정 (UTC 변환 X)
 const parseLocalDate = (yyyymmdd) => {
   if (!yyyymmdd) return null;
   const [y, m, d] = yyyymmdd.split('-').map(Number);
@@ -63,6 +147,9 @@ const timeToHours = (s, e) => {
 const fmt = n => Number(n || 0).toFixed(1);
 const fmtI = n => Math.round(Number(n || 0)).toLocaleString();
 
+// ============================================
+// 메인 App
+// ============================================
 export default function App() {
   const [data, setData] = useState(loadData());
   const [tab, setTab] = useState('dashboard');
@@ -82,7 +169,7 @@ export default function App() {
   const exam = EXAM_DATA[data.examType];
   const update = (c) => setData(p => ({ ...p, ...c }));
 
-  // ✅ FIX #5: JSON 백업/복원
+  // 백업 다운로드
   const exportData = () => {
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -118,67 +205,76 @@ export default function App() {
     e.target.value = '';
   };
 
+  // 통계 계산
   const stats = useMemo(() => {
-    const totalDirect = data.fieldworkLogs.reduce((s, l) => s + (Number(l.direct) || 0), 0);
-    const totalIndirect = data.fieldworkLogs.reduce((s, l) => {
-      const ft = timeToHours(l.startTime, l.endTime);
-      return s + Math.max(0, ft - (Number(l.direct) || 0));
-    }, 0);
-    const totalFW = totalDirect + totalIndirect;
-    const totalGroup = data.supervisionLogs.reduce((s, l) => s + (Number(l.group) || 0), 0);
-    const totalIndiv = data.supervisionLogs.reduce((s, l) => s + (Number(l.individual) || 0), 0);
-    const totalSV = totalGroup + totalIndiv;
+    // 필드워크
+    const fwTotal = data.fieldworkLogs.reduce((s, l) => s + timeToHours(l.startTime, l.endTime), 0);
 
+    // QASP-S 역할 구분
+    let supervisorRole = 0, serviceRole = 0;
+    if (exam.hasRoleDivision) {
+      data.fieldworkLogs.forEach(l => {
+        const hrs = timeToHours(l.startTime, l.endTime);
+        if (l.role === 'supervisor') supervisorRole += hrs;
+        else serviceRole += hrs;
+      });
+    }
+
+    // 슈퍼비전
+    const svTotal = data.supervisionLogs.reduce((s, l) => s + (Number(l.hours) || 0), 0);
+
+    // 슈퍼비전 5% 요구 (전체 필드워크 기준)
+    const svRequired = fwTotal * (exam.svPercent / 100);
+    const svDiff = svTotal - svRequired;
+
+    // 월별 데이터
     const monthMap = {};
     data.fieldworkLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
-      const ft = timeToHours(l.startTime, l.endTime);
-      const d = Number(l.direct) || 0;
-      if (!monthMap[ym]) monthMap[ym] = { ym, direct: 0, indirect: 0, group: 0, individual: 0 };
-      monthMap[ym].direct += d;
-      monthMap[ym].indirect += Math.max(0, ft - d);
+      const hrs = timeToHours(l.startTime, l.endTime);
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, supervisor: 0, service: 0 };
+      monthMap[ym].fw += hrs;
+      if (exam.hasRoleDivision) {
+        if (l.role === 'supervisor') monthMap[ym].supervisor += hrs;
+        else monthMap[ym].service += hrs;
+      }
     });
     data.supervisionLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
-      if (!monthMap[ym]) monthMap[ym] = { ym, direct: 0, indirect: 0, group: 0, individual: 0 };
-      monthMap[ym].group += Number(l.group) || 0;
-      monthMap[ym].individual += Number(l.individual) || 0;
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, supervisor: 0, service: 0 };
+      monthMap[ym].sv += Number(l.hours) || 0;
     });
-    // ✅ FIX #2: 그룹/개별 분리 표시
     const monthlyData = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym))
       .map(m => ({
-        ...m,
-        Direct: Math.round(m.direct * 10) / 10,
-        Indirect: Math.round(m.indirect * 10) / 10,
-        그룹: Math.round(m.group * 10) / 10,
-        개별: Math.round(m.individual * 10) / 10,
-        필드워크: Math.round((m.direct + m.indirect) * 10) / 10,
-        슈퍼비전: Math.round((m.group + m.individual) * 10) / 10,
+        ym: m.ym,
+        fw: m.fw,
+        sv: m.sv,
+        필드워크: Math.round(m.fw * 10) / 10,
+        슈퍼비전: Math.round(m.sv * 10) / 10,
+        필요슈퍼비전: Math.round(m.fw * (exam.svPercent / 100) * 10) / 10,
         누적: 0
       }));
     let cum = 0;
     monthlyData.forEach(m => { cum += m.필드워크; m.누적 = Math.round(cum * 10) / 10; });
 
-    // ✅ FIX #1: 타임존 안전한 날짜 계산
+    // 페이스
     const dates = data.fieldworkLogs.map(l => l.date).filter(Boolean).sort();
     const startDate = data.startDate || (dates[0] || '');
     let weeksElapsed = 0;
     if (startDate) {
       const start = parseLocalDate(startDate);
       const now = new Date();
-      const diffMs = now - start;
-      weeksElapsed = Math.max(1, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)));
+      weeksElapsed = Math.max(1, Math.ceil((now - start) / (7 * 24 * 60 * 60 * 1000)));
     }
-    const weeklyPace = weeksElapsed > 0 ? totalFW / weeksElapsed : 0;
-    const remaining = Math.max(0, exam.total - totalFW);
+    const weeklyPace = weeksElapsed > 0 ? fwTotal / weeksElapsed : 0;
+    const remaining = Math.max(0, exam.total - fwTotal);
 
-    // ✅ FIX #9: 비현실적 예상일 처리
     let estCompletion = '-';
     if (weeklyPace > 0 && startDate && remaining > 0) {
       const weeksRemaining = remaining / weeklyPace;
-      if (weeksRemaining <= 520) { // 10년 이하만 예상일 표시
+      if (weeksRemaining <= 520) {
         const target = new Date(Date.now() + weeksRemaining * 7 * 24 * 60 * 60 * 1000);
         estCompletion = dateToYMD(target);
       } else {
@@ -190,32 +286,62 @@ export default function App() {
 
     const now = new Date();
     const thisYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const thisMonth = monthMap[thisYM] || { direct: 0, indirect: 0 };
-    const thisMonthFW = thisMonth.direct + thisMonth.indirect;
+    const thisMonth = monthMap[thisYM] || { fw: 0, sv: 0 };
+    const thisMonthSvRequired = thisMonth.fw * (exam.svPercent / 100);
 
-    return { totalDirect, totalIndirect, totalFW, totalGroup, totalIndiv, totalSV,
-             monthlyData, weeklyPace, remaining, estCompletion, thisMonthFW };
+    // 월별 5% 미충족 분석 (지난달 까지만)
+    const currentYM = thisYM;
+    const monthsShort = monthlyData.filter(m => {
+      if (m.ym >= currentYM) return false; // 이번 달은 진행 중이라 제외
+      if (m.fw === 0) return false; // 필드워크 없으면 슈퍼비전 의무도 없음
+      const needed = m.fw * (exam.svPercent / 100);
+      return m.sv < needed - 0.01;
+    }).map(m => ({
+      ym: m.ym,
+      fw: m.fw,
+      sv: m.sv,
+      needed: Math.round(m.fw * (exam.svPercent / 100) * 10) / 10,
+      shortage: Math.round((m.fw * (exam.svPercent / 100) - m.sv) * 10) / 10
+    }));
+
+    return {
+      fwTotal, svTotal, svRequired, svDiff,
+      supervisorRole, serviceRole,
+      monthlyData, weeklyPace, remaining, estCompletion,
+      thisMonthFW: thisMonth.fw, thisMonthSV: thisMonth.sv, thisMonthSvRequired,
+      monthsShort
+    };
   }, [data, exam]);
 
+  // 충족도 경고
   const warnings = useMemo(() => {
     const w = [];
-    const dd = exam.directMax - stats.totalDirect;
-    w.push(dd > 0 ? { type: 'Direct', status: 'good', msg: `${fmtI(dd)}hr 여유`, guide: `${fmtI(exam.directMax)}hr 이하 유지` }
-           : dd === 0 ? { type: 'Direct', status: 'warn', msg: '한도 도달', guide: `${fmtI(exam.directMax)}hr 이하 유지` }
-           : { type: 'Direct', status: 'danger', msg: `${fmtI(-dd)}hr 초과`, guide: `${fmtI(exam.directMax)}hr 이하 유지` });
 
-    const gd = exam.groupMax - stats.totalGroup;
-    w.push(gd > 0 ? { type: 'Group 슈퍼비전', status: 'good', msg: `${fmtI(gd)}hr 여유`, guide: `${fmtI(exam.groupMax)}hr 이하 유지` }
-           : gd === 0 ? { type: 'Group 슈퍼비전', status: 'warn', msg: '한도 도달', guide: `${fmtI(exam.groupMax)}hr 이하 유지` }
-           : { type: 'Group 슈퍼비전', status: 'danger', msg: `${fmtI(-gd)}hr 초과`, guide: `${fmtI(exam.groupMax)}hr 이하 유지` });
+    // 필드워크 총 시간
+    const fwDiff = exam.total - stats.fwTotal;
+    w.push(fwDiff > 0
+      ? { type: '필드워크 총 시간', status: 'warn', msg: `${fmtI(fwDiff)}hr 더 필요`, guide: `${fmtI(exam.total)}hr 채우기` }
+      : { type: '필드워크 총 시간', status: 'good', msg: '✓ 달성!', guide: `${fmtI(exam.total)}hr 채우기` });
 
-    const id = exam.indirectMin - stats.totalIndirect;
-    w.push(id <= 0 ? { type: 'Indirect', status: 'good', msg: id < 0 ? `+${fmtI(-id)}hr 초과달성` : '충족!', guide: `${fmtI(exam.indirectMin)}hr 이상 채우기` }
-           : { type: 'Indirect', status: 'warn', msg: `${fmtI(id)}hr 더 필요`, guide: `${fmtI(exam.indirectMin)}hr 이상 채우기` });
+    // 슈퍼비전 5%
+    if (stats.fwTotal > 0) {
+      if (Math.abs(stats.svDiff) < 0.5) {
+        w.push({ type: '슈퍼비전 5%', status: 'good', msg: '✓ 적정', guide: `현재 ${fmt(stats.svRequired)}hr 필요` });
+      } else if (stats.svDiff < 0) {
+        w.push({ type: '슈퍼비전 5%', status: 'warn', msg: `${fmt(-stats.svDiff)}hr 부족`, guide: `현재 ${fmt(stats.svRequired)}hr 필요` });
+      } else {
+        w.push({ type: '슈퍼비전 5%', status: 'good', msg: `+${fmt(stats.svDiff)}hr 여유`, guide: `현재 ${fmt(stats.svRequired)}hr 필요` });
+      }
+    }
 
-    const ind = exam.indivMin - stats.totalIndiv;
-    w.push(ind <= 0 ? { type: 'Individual 슈퍼비전', status: 'good', msg: ind < 0 ? `+${fmtI(-ind)}hr 초과달성` : '충족!', guide: `${fmtI(exam.indivMin)}hr 이상 채우기` }
-           : { type: 'Individual 슈퍼비전', status: 'warn', msg: `${fmtI(ind)}hr 더 필요`, guide: `${fmtI(exam.indivMin)}hr 이상 채우기` });
+    // QASP-S 슈퍼바이저 역할
+    if (exam.hasRoleDivision) {
+      const supDiff = exam.supervisorMin - stats.supervisorRole;
+      w.push(supDiff > 0
+        ? { type: '슈퍼바이저 역할', status: 'warn', msg: `${fmtI(supDiff)}hr 더 필요`, guide: `${fmtI(exam.supervisorMin)}hr 이상 필수` }
+        : { type: '슈퍼바이저 역할', status: 'good', msg: '✓ 달성!', guide: `${fmtI(exam.supervisorMin)}hr 이상 필수` });
+    }
+
     return w;
   }, [stats, exam]);
 
@@ -225,7 +351,7 @@ export default function App() {
         <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
           <div>
             <h1 style={{ margin: 0, fontSize: 24, color: C.pinkDeep, fontWeight: 700, letterSpacing: '-0.02em' }}>검단ABA 자격시간 추적</h1>
-            <p style={{ margin: '6px 0 0 0', fontSize: 13, color: C.plumDark }}>BCBA · QBA · QASP-S 자격 준비 보조</p>
+            <p style={{ margin: '6px 0 0 0', fontSize: 13, color: C.plumDark }}>QBA · QASP-S 자격 준비 보조</p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <select value={data.examType} onChange={e => {
@@ -240,18 +366,24 @@ export default function App() {
               <option value="QASP-S">QASP-S</option>
             </select>
             <button onClick={exportData} title="JSON 백업 다운로드"
-                    style={{ padding: '10px 14px', fontSize: 13, background: C.pinkSoft, color: C.plumDark, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', fontWeight: 500 }}>💾 백업</button>
+                    style={headerBtnStyle}>💾</button>
             <button onClick={() => fileInputRef.current?.click()} title="백업 파일 복원"
-                    style={{ padding: '10px 14px', fontSize: 13, background: C.pinkSoft, color: C.plumDark, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', fontWeight: 500 }}>📂 복원</button>
+                    style={headerBtnStyle}>📂</button>
             <input ref={fileInputRef} type="file" accept=".json" onChange={importData} style={{ display: 'none' }} />
-            <button onClick={() => setShowGuide(true)}
-                    style={{ padding: '10px 14px', fontSize: 13, background: C.pinkSoft, color: C.plumDark, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', fontWeight: 500 }}>📖 안내</button>
+            <button onClick={() => setShowGuide(true)} title="사용 안내"
+                    style={headerBtnStyle}>📖</button>
           </div>
         </div>
       </header>
 
       <nav style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, display: 'flex', maxWidth: 1200, margin: '0 auto', padding: '0 24px', gap: 4, overflowX: 'auto' }}>
-        {[{ id: 'dashboard', l: '📊 대시보드' }, { id: 'fieldwork', l: '📋 필드워크' }, { id: 'supervision', l: '🎓 슈퍼비전' }, { id: 'analysis', l: '📂 슈퍼바이저별' }].map(t => (
+        {[
+          { id: 'dashboard', l: '📊 대시보드' },
+          { id: 'fieldwork', l: '📋 필드워크' },
+          { id: 'supervision', l: '🎓 슈퍼비전' },
+          { id: 'analysis', l: '📂 슈퍼바이저별' },
+          { id: 'info', l: '📚 시험 정보' }
+        ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
                   style={{ padding: '14px 22px', fontSize: 14, color: tab === t.id ? C.pinkDeep : C.grayText, background: 'transparent', border: 'none',
                            borderBottom: tab === t.id ? `2.5px solid ${C.pinkDeep}` : '2.5px solid transparent',
@@ -260,14 +392,20 @@ export default function App() {
       </nav>
 
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+        <datalist id="supervisor-list">
+          {data.mainSupervisor && <option value={data.mainSupervisor} />}
+          {(data.supervisors || []).map(s => <option key={s} value={s} />)}
+        </datalist>
+
         {tab === 'dashboard' && <Dashboard data={data} stats={stats} exam={exam} warnings={warnings} update={update} />}
-        {tab === 'fieldwork' && <FieldworkLog data={data} update={update} />}
+        {tab === 'fieldwork' && <FieldworkLog data={data} exam={exam} update={update} />}
         {tab === 'supervision' && <SupervisionLog data={data} update={update} />}
         {tab === 'analysis' && <BySupervisor data={data} />}
+        {tab === 'info' && <ExamInfoTab />}
       </main>
 
       <footer style={{ background: C.pinkPale, padding: '28px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.plumDark, marginBottom: 6 }}>© 2026 검단ABA언어행동연구소 · All Rights Reserved</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.plumDark, marginBottom: 6 }}>© 검단ABA언어행동연구소 · All Rights Reserved</div>
         <div style={{ fontSize: 11, color: '#8B3A3A', marginBottom: 4 }}>본 자료는 검단ABA언어행동연구소의 지적재산입니다. 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.</div>
         <div style={{ fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>위반 시 저작권법에 따라 민·형사상 책임을 묻습니다.</div>
       </footer>
@@ -277,6 +415,14 @@ export default function App() {
     </div>
   );
 }
+
+const headerBtnStyle = {
+  padding: '10px 12px', fontSize: 16,
+  background: C.pinkSoft, color: C.plumDark,
+  border: `1px solid ${C.pinkLight}`, borderRadius: 8,
+  cursor: 'pointer', fontWeight: 500,
+  minWidth: 42
+};
 
 function Toast({ msg, type }) {
   const colors = { good: C.goodGreen, danger: C.dangerRed, info: C.plumDark };
@@ -295,28 +441,130 @@ const tooltipStyle = {
   fontSize: 13, boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
 };
 
+// ============================================
+// 🎉 환영/시작 안내 카드
+// ============================================
+function WelcomeCard({ examType }) {
+  const isQASP = examType === 'QASP-S';
+  return (
+    <div style={{
+      background: `linear-gradient(135deg, ${C.pinkSoft} 0%, ${C.pinkPale} 100%)`,
+      border: `1px solid ${C.pinkLight}`,
+      borderRadius: 16,
+      padding: 28
+    }}>
+      <h2 style={{ margin: '0 0 12px 0', color: C.pinkDeep, fontSize: 22, fontWeight: 700 }}>
+        🎉 검단ABA 자격시간 추적에 오신 것을 환영합니다
+      </h2>
+      <p style={{ margin: '0 0 20px 0', fontSize: 14, color: C.plumDark, lineHeight: 1.7 }}>
+        <strong>{examType}</strong> 자격 준비를 함께 시작해요. 아래 3단계로 시작할 수 있습니다.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+        <StartStep num="1" title="사용자 정보 입력" desc="아래 본인·슈퍼바이저 이름을 적어주세요" />
+        <StartStep num="2" title="필드워크 기록 추가" desc={`📋 탭에서 매 회기를 입력하세요${isQASP ? ' (역할 선택!)' : ''}`} />
+        <StartStep num="3" title="슈퍼비전 기록 추가" desc="🎓 탭에서 슈퍼비전 받은 시간을 입력하세요" />
+      </div>
+      <div style={{ marginTop: 16, padding: 12, background: C.white, borderRadius: 8, fontSize: 12, color: C.grayHead, lineHeight: 1.6 }}>
+        💡 <strong>{examType} 기준</strong>: 필드워크 <strong>{isQASP ? '1,000' : '2,000'}시간</strong>
+        {isQASP && ' (이 중 슈퍼바이저 역할 600시간 이상)'}
+        + 매월 슈퍼비전 <strong>5%</strong>
+      </div>
+    </div>
+  );
+}
+
+function StartStep({ num, title, desc }) {
+  return (
+    <div style={{ background: C.white, borderRadius: 10, padding: 14, border: `1px solid ${C.pinkLight}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{
+          width: 24, height: 24, borderRadius: '50%', background: C.pinkDeep,
+          color: C.white, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, fontWeight: 700
+        }}>{num}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.plumDark }}>{title}</div>
+      </div>
+      <div style={{ fontSize: 12, color: C.grayText, lineHeight: 1.6 }}>{desc}</div>
+    </div>
+  );
+}
+
+// ============================================
+// ⚠️ 월별 5% 미충족 알림
+// ============================================
+function MonthlyShortAlert({ monthsShort }) {
+  const [expanded, setExpanded] = useState(false);
+  const count = monthsShort.length;
+  const visible = expanded ? monthsShort : monthsShort.slice(0, 3);
+
+  return (
+    <div style={{
+      background: '#FBEFD3',
+      border: `1px solid ${C.warnYellow}`,
+      borderRadius: 12,
+      padding: 16
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#8A6D2A' }}>
+          ⚠️ 슈퍼비전 5%를 채우지 못한 달이 {count}개월 있어요
+        </div>
+        {count > 3 && (
+          <button onClick={() => setExpanded(!expanded)}
+            style={{ background: 'transparent', border: 'none', color: '#8A6D2A', cursor: 'pointer', fontSize: 12, fontWeight: 600, fontFamily: 'inherit' }}>
+            {expanded ? '접기 ▲' : `모두 보기 (${count}) ▼`}
+          </button>
+        )}
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {visible.map(m => (
+          <div key={m.ym} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '8px 12px', background: C.white, borderRadius: 6, fontSize: 12
+          }}>
+            <span style={{ color: C.plumDark, fontWeight: 600 }}>{m.ym}</span>
+            <span style={{ color: C.grayText }}>
+              필드워크 {fmt(m.fw)}hr · 슈퍼비전 {fmt(m.sv)}/{fmt(m.needed)}hr ·
+              <strong style={{ color: C.dangerRed, marginLeft: 4 }}>{fmt(m.shortage)}hr 부족</strong>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 10, fontSize: 11, color: '#8A6D2A', fontStyle: 'italic' }}>
+        💡 슈퍼비전은 매월 단위로 5%를 충족해야 합니다. 이미 지난 달의 부족분은 다음 달에 보충하기 어려울 수 있어요.
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// 📊 DASHBOARD
+// ============================================
 function Dashboard({ data, stats, exam, warnings, update }) {
-  const ratioData = [
-    { name: 'Direct', value: stats.totalDirect, color: C.goldDeep },
-    { name: 'Indirect', value: stats.totalIndirect, color: C.pinkDeep }
-  ];
+  const hasNoData = data.fieldworkLogs.length === 0 && data.supervisionLogs.length === 0;
+
   const progressData = [{
     name: 'progress',
-    value: Math.min(100, (stats.totalFW / exam.total) * 100),
+    value: Math.min(100, (stats.fwTotal / exam.total) * 100),
     fill: C.pinkDeep
   }];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
-        <KpiCard label="Total Fieldwork" value={fmt(stats.totalFW)} target={exam.total} color={C.pinkDeep} />
-        <KpiCard label="Direct" value={fmt(stats.totalDirect)} target={exam.directMax} color={C.goldDeep} sub="최대" isMax />
-        <KpiCard label="Indirect" value={fmt(stats.totalIndirect)} target={exam.indirectMin} color={C.goodGreen} sub="최소" />
-        <KpiCard label="Total Supervision" value={fmt(stats.totalSV)} target={exam.svTotal} color={C.plumDark} />
-      </div>
+      {/* 1. 빈 상태 환영 카드 */}
+      {hasNoData && <WelcomeCard examType={data.examType} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24 }}>
-        <Section title="🎯 전체 진행률">
+      {/* 2. 월별 5% 미충족 경고 */}
+      {stats.monthsShort && stats.monthsShort.length > 0 && (
+        <MonthlyShortAlert monthsShort={stats.monthsShort} />
+      )}
+
+      {/* 3. 사용자 정보 (컴팩트) */}
+      <CompactUserInfo data={data} update={update} />
+
+      {/* 4. 🎯 한눈에 보기 - 라디얼 + 핵심 수치 통합 */}
+      <Section title="🎯 한눈에 보기">
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 1fr) 2fr', gap: 24, alignItems: 'center' }}>
+          {/* 좌: 라디얼 */}
           <div style={{ position: 'relative', height: 240 }}>
             <ResponsiveContainer width="100%" height="100%">
               <RadialBarChart innerRadius="65%" outerRadius="95%" data={progressData} startAngle={90} endAngle={-270}>
@@ -324,66 +572,76 @@ function Dashboard({ data, stats, exam, warnings, update }) {
               </RadialBarChart>
             </ResponsiveContainer>
             <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center', pointerEvents: 'none' }}>
-              <div style={{ fontSize: 36, fontWeight: 700, color: C.pinkDeep, letterSpacing: '-0.02em' }}>{((stats.totalFW / exam.total) * 100).toFixed(1)}%</div>
-              <div style={{ fontSize: 12, color: C.grayText, marginTop: 4 }}>{fmt(stats.totalFW)} / {fmtI(exam.total)} hr</div>
+              <div style={{ fontSize: 36, fontWeight: 700, color: C.pinkDeep, letterSpacing: '-0.02em' }}>
+                {((stats.fwTotal / exam.total) * 100).toFixed(1)}%
+              </div>
+              <div style={{ fontSize: 12, color: C.grayText, marginTop: 4 }}>
+                {fmt(stats.fwTotal)} / {fmtI(exam.total)} hr
+              </div>
             </div>
           </div>
-        </Section>
 
-        <Section title="🧩 Direct vs Indirect">
-          {stats.totalFW > 0 ? (
-            <div style={{ height: 240 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={ratioData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                       innerRadius={60} outerRadius={90} paddingAngle={2}
-                       label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
-                       labelLine={false}>
-                    {ratioData.map((e, i) => <Cell key={i} fill={e.color} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => `${fmt(v)} hr`} contentStyle={tooltipStyle} />
-                  <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 10 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          ) : <EmptyChart msg="필드워크 입력 후 표시됩니다" />}
-        </Section>
-      </div>
+          {/* 우: 핵심 수치 */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
+            <StatBox
+              label="📋 필드워크"
+              value={fmt(stats.fwTotal)}
+              unit="hr"
+              sub={`/ ${fmtI(exam.total)}hr`}
+              color={C.pinkDeep}
+            />
+            <StatBox
+              label="🎓 슈퍼비전"
+              value={fmt(stats.svTotal)}
+              unit="hr"
+              sub={stats.fwTotal > 0 ? `5% 필요량 ${fmt(stats.svRequired)}hr` : '필드워크 입력 시 자동'}
+              color={C.plumDark}
+            />
+            {exam.hasRoleDivision ? (
+              <StatBox
+                label="👨‍💼 슈퍼바이저 역할"
+                value={fmt(stats.supervisorRole)}
+                unit="hr"
+                sub={`최소 ${fmtI(exam.supervisorMin)}hr`}
+                color={C.goldDeep}
+              />
+            ) : (
+              <StatBox
+                label="⏳ 남은 시간"
+                value={fmtI(stats.remaining)}
+                unit="hr"
+                sub="목표까지"
+                color={C.pinkMid}
+              />
+            )}
+            <StatBox
+              label="⚡ 주당 페이스"
+              value={fmt(stats.weeklyPace)}
+              unit="hr/주"
+              sub={`예상 완료: ${stats.estCompletion}`}
+              color={C.pinkGold}
+            />
+          </div>
+        </div>
 
-      <Section title="💡 인사이트">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <Insight icon="⏳" label="남은 시간" value={`${fmtI(stats.remaining)} hr`} sub="필드워크 목표까지" />
-          <Insight icon="📅" label="이번 달" value={`${fmt(stats.thisMonthFW)} hr`} sub="이번달 필드워크" />
-          <Insight icon="⚡" label="주당 페이스" value={`${fmt(stats.weeklyPace)} hr/주`} sub="평균 페이스" />
-          <Insight icon="🎯" label="예상 완료" value={stats.estCompletion} sub="현재 페이스 기준" />
+        {/* 시작일 설정 (작게) */}
+        <div style={{ marginTop: 16, padding: 12, background: C.pinkPale, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>📅 시작일:</span>
+          <input type="date" value={data.startDate || ''} onChange={e => update({ startDate: e.target.value })}
+                 style={{ ...inputStyle, width: 'auto', flex: '0 1 200px' }} />
+          <span style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>비우면 첫 회기 자동</span>
         </div>
       </Section>
 
+      {/* 5. 자격 기준 충족도 */}
       <Section title="📊 자격 기준 충족도">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           {warnings.map((w, i) => <WarnCard key={i} {...w} />)}
         </div>
       </Section>
 
-      <Section title="📅 진행 페이스">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          <div style={paceCellStyle}>
-            <div style={paceLabelStyle}>시작일</div>
-            <input type="date" value={data.startDate || ''} onChange={e => update({ startDate: e.target.value })} style={inputStyle} />
-            <div style={paceHintStyle}>비우면 첫 회기 자동</div>
-          </div>
-          <div style={paceCellStyle}>
-            <div style={paceLabelStyle}>현재 페이스</div>
-            <div style={paceValueStyle}>{fmt(stats.weeklyPace)} hr/주</div>
-          </div>
-          <div style={paceCellStyle}>
-            <div style={paceLabelStyle}>예상 완료일</div>
-            <div style={paceValueStyle}>{stats.estCompletion}</div>
-          </div>
-        </div>
-      </Section>
-
-      <Section title="📈 월별 필드워크·슈퍼비전 추이 (누적 추세선)">
+      {/* 6. 월별 추이 */}
+      <Section title="📈 월별 필드워크·슈퍼비전 추이">
         {stats.monthlyData.length > 0 ? (
           <div style={{ height: 340 }}>
             <ResponsiveContainer width="100%" height="100%">
@@ -391,7 +649,7 @@ function Dashboard({ data, stats, exam, warnings, update }) {
                 <CartesianGrid strokeDasharray="3 3" stroke={C.pinkLight} vertical={false} />
                 <XAxis dataKey="ym" tick={{ fontSize: 12, fill: C.grayText }} axisLine={{ stroke: C.pinkLight }} tickLine={false} />
                 <YAxis yAxisId="left" tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false}
-                       label={{ value: '월별(hr)', angle: -90, position: 'insideLeft', style: { fill: C.grayText, fontSize: 11 } }} />
+                       label={{ value: '시간(hr)', angle: -90, position: 'insideLeft', style: { fill: C.grayText, fontSize: 11 } }} />
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false}
                        label={{ value: '누적(hr)', angle: 90, position: 'insideRight', style: { fill: C.grayText, fontSize: 11 } }} />
                 <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${fmt(v)} hr`, n]} />
@@ -405,36 +663,9 @@ function Dashboard({ data, stats, exam, warnings, update }) {
         ) : <EmptyChart msg="월별 데이터가 없습니다. 필드워크 입력 후 표시됩니다." />}
       </Section>
 
-      <Section title="📊 Direct·Indirect 월별 (필드워크 세부)">
-        {stats.monthlyData.length > 0 ? (
-          <div style={{ height: 280 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats.monthlyData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
-                <defs>
-                  <linearGradient id="colorDirect" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={C.goldDeep} stopOpacity={0.4} />
-                    <stop offset="95%" stopColor={C.goldDeep} stopOpacity={0.05} />
-                  </linearGradient>
-                  <linearGradient id="colorIndirect" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={C.goodGreen} stopOpacity={0.4} />
-                    <stop offset="95%" stopColor={C.goodGreen} stopOpacity={0.05} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.pinkLight} vertical={false} />
-                <XAxis dataKey="ym" tick={{ fontSize: 12, fill: C.grayText }} axisLine={{ stroke: C.pinkLight }} tickLine={false} />
-                <YAxis tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${fmt(v)} hr`, n]} />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 8 }} />
-                <Area type="monotone" dataKey="Direct" name="Direct" stroke={C.goldDeep} strokeWidth={2} fill="url(#colorDirect)" />
-                <Area type="monotone" dataKey="Indirect" name="Indirect" stroke={C.goodGreen} strokeWidth={2} fill="url(#colorIndirect)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        ) : <EmptyChart msg="필드워크 입력 후 표시됩니다" />}
-      </Section>
-
-      <Section title="🎓 그룹·개별 슈퍼비전 월별 (슈퍼비전 세부)">
-        {stats.monthlyData.some(m => m.그룹 + m.개별 > 0) ? (
+      {/* 7. 슈퍼비전 5% 비교 */}
+      <Section title="🎓 월별 슈퍼비전 5% 달성 비교">
+        {stats.monthlyData.some(m => m.필드워크 > 0) ? (
           <div style={{ height: 280 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={stats.monthlyData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
@@ -443,30 +674,126 @@ function Dashboard({ data, stats, exam, warnings, update }) {
                 <YAxis tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${fmt(v)} hr`, n]} />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 8 }} />
-                <Bar dataKey="그룹" fill={C.groupBlue} radius={[4, 4, 0, 0]} barSize={20} />
-                <Bar dataKey="개별" fill={C.indivPurple} radius={[4, 4, 0, 0]} barSize={20} />
+                <Bar dataKey="필요슈퍼비전" name="필요 (5%)" fill={C.pinkGold} radius={[4, 4, 0, 0]} barSize={20} />
+                <Bar dataKey="슈퍼비전" name="실제 받은" fill={C.plumDark} radius={[4, 4, 0, 0]} barSize={20} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        ) : <EmptyChart msg="슈퍼비전 입력 후 표시됩니다" />}
-      </Section>
-
-      <Section title="👤 사용자 정보">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 16 }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 13, color: C.grayText, fontWeight: 600 }}>슈퍼바이지(본인) 이름</span>
-            <input type="text" value={data.superviseeName || ''} onChange={e => update({ superviseeName: e.target.value })} style={inputStyle} placeholder="예: 강경희" />
-          </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 13, color: C.grayText, fontWeight: 600 }}>메인 슈퍼바이저</span>
-            <input type="text" value={data.mainSupervisor || ''} onChange={e => update({ mainSupervisor: e.target.value })} style={inputStyle} placeholder="예: 민다혜" />
-          </label>
-        </div>
+        ) : <EmptyChart msg="필드워크 입력 후 표시됩니다" />}
       </Section>
     </div>
   );
 }
 
+// StatBox - 컴팩트한 숫자 카드 ("한눈에 보기" 우측)
+function StatBox({ label, value, unit, sub, color }) {
+  return (
+    <div style={{
+      padding: 14,
+      background: C.pinkPale,
+      borderRadius: 10,
+      borderLeft: `3px solid ${color}`
+    }}>
+      <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      <div style={{ display: 'baseline' }}>
+        <span style={{ fontSize: 22, fontWeight: 700, color: color, letterSpacing: '-0.02em' }}>{value}</span>
+        <span style={{ fontSize: 12, color: C.grayText, marginLeft: 4 }}>{unit}</span>
+      </div>
+      <div style={{ fontSize: 10, color: C.grayText, marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+
+// CompactUserInfo - 한 줄짜리 사용자 정보 + 슈퍼바이저 관리 토글
+function CompactUserInfo({ data, update }) {
+  const [showSupervisors, setShowSupervisors] = useState(false);
+  const supervisors = data.supervisors || [];
+  const [newName, setNewName] = useState('');
+
+  const addSupervisor = () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (supervisors.includes(name)) {
+      window.alert('이미 추가된 슈퍼바이저입니다.');
+      return;
+    }
+    if (name === data.mainSupervisor) {
+      window.alert('메인 슈퍼바이저와 같습니다.');
+      return;
+    }
+    update({ supervisors: [...supervisors, name] });
+    setNewName('');
+  };
+
+  const removeSupervisor = (name) => {
+    if (window.confirm(`'${name}' 슈퍼바이저를 목록에서 제거할까요?\n(이미 입력된 기록은 유지됩니다)`)) {
+      update({ supervisors: supervisors.filter(s => s !== name) });
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, borderRadius: 12, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>👤</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 200px' }}>
+          <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600, whiteSpace: 'nowrap' }}>슈퍼바이지</span>
+          <input type="text" value={data.superviseeName || ''} onChange={e => update({ superviseeName: e.target.value })}
+                 style={{ ...inputStyle, padding: '7px 10px', fontSize: 13 }} placeholder="이름" />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 200px' }}>
+          <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600, whiteSpace: 'nowrap' }}>메인 슈퍼바이저</span>
+          <input type="text" value={data.mainSupervisor || ''} onChange={e => update({ mainSupervisor: e.target.value })}
+                 style={{ ...inputStyle, padding: '7px 10px', fontSize: 13 }} placeholder="이름" />
+        </label>
+        <button onClick={() => setShowSupervisors(!showSupervisors)}
+                style={{ padding: '7px 12px', fontSize: 12, fontWeight: 500,
+                         background: showSupervisors ? C.pinkDeep : C.pinkSoft,
+                         color: showSupervisors ? C.white : C.plumDark,
+                         border: `1px solid ${C.pinkLight}`, borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          + 추가 슈퍼바이저 ({supervisors.length})
+        </button>
+      </div>
+
+      {showSupervisors && (
+        <div style={{ marginTop: 12, padding: 12, background: C.pinkPale, borderRadius: 8 }}>
+          {supervisors.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {supervisors.map(name => (
+                <div key={name}
+                     style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 10px', background: C.white, border: `1px solid ${C.pinkLight}`, borderRadius: 14, fontSize: 12 }}>
+                  <span style={{ color: C.plumDark, fontWeight: 500 }}>{name}</span>
+                  <button onClick={() => removeSupervisor(name)}
+                          style={{ background: 'none', border: 'none', color: C.grayText, cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addSupervisor()}
+              placeholder="슈퍼바이저 이름 입력 후 Enter"
+              style={{ ...inputStyle, padding: '7px 10px', fontSize: 13, flex: 1 }}
+            />
+            <button onClick={addSupervisor}
+                    style={{ padding: '7px 14px', background: C.pinkDeep, color: C.white, border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              + 추가
+            </button>
+          </div>
+          <p style={{ margin: '8px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
+            여러 슈퍼바이저와 일하는 경우 추가하세요. 기록 입력 시 자동완성됩니다.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// 공통 컴포넌트
+// ============================================
 const Section = ({ title, children }) => (
   <section style={{ background: C.white, borderRadius: 12, padding: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
     <h2 style={{ margin: '0 0 20px 0', fontSize: 15, fontWeight: 700, color: C.plumDark, letterSpacing: '-0.01em' }}>{title}</h2>
@@ -485,49 +812,6 @@ const inputStyle = {
   background: C.white, fontFamily: 'inherit', width: '100%', boxSizing: 'border-box', outline: 'none'
 };
 
-const paceCellStyle = { background: C.pinkPale, borderRadius: 8, padding: 16 };
-const paceLabelStyle = { fontSize: 12, color: C.grayText, fontWeight: 600, marginBottom: 8 };
-const paceValueStyle = { fontSize: 18, fontWeight: 700, color: C.plumDark };
-const paceHintStyle = { fontSize: 10, color: C.grayText, fontStyle: 'italic', marginTop: 4 };
-
-// ✅ FIX #3: Indirect 초과달성 표시
-function KpiCard({ label, value, target, color, sub, isMax }) {
-  const val = parseFloat(value);
-  const pct = target > 0 ? (val / target) * 100 : 0;
-  const displayPct = Math.min(100, pct);
-  const isOverAchieved = !isMax && pct > 100;
-  const isOverLimit = isMax && pct > 100;
-
-  return (
-    <div style={{ background: C.white, borderRadius: 12, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', borderTop: `3px solid ${color}` }}>
-      <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-        {label} {sub && <span style={{ fontWeight: 400, textTransform: 'none', fontSize: 10, color: C.plumDark }}>({sub})</span>}
-      </div>
-      <div style={{ fontSize: 30, fontWeight: 700, margin: '10px 0', color, letterSpacing: '-0.02em' }}>
-        {value}<span style={{ fontSize: 14, fontWeight: 400, marginLeft: 4 }}>hr</span>
-      </div>
-      <div style={{ height: 5, background: '#F0EAEC', borderRadius: 3, overflow: 'hidden', margin: '10px 0' }}>
-        <div style={{ height: '100%', borderRadius: 3, transition: 'width 0.4s', width: `${displayPct}%`,
-                      background: isOverLimit ? C.dangerRed : color }} />
-      </div>
-      <div style={{ fontSize: 11, color: C.grayText }}>
-        목표 {fmtI(target)}hr · <strong style={{color: isOverLimit ? C.dangerRed : C.plumDark}}>
-          {pct.toFixed(1)}%{isOverAchieved && ' ⭐'}
-        </strong>
-      </div>
-    </div>
-  );
-}
-
-const Insight = ({ icon, label, value, sub }) => (
-  <div style={{ background: C.pinkPale, borderRadius: 8, padding: 16, textAlign: 'center' }}>
-    <div style={{ fontSize: 22 }}>{icon}</div>
-    <div style={{ fontSize: 11, color: C.grayText, marginTop: 6, fontWeight: 600 }}>{label}</div>
-    <div style={{ fontSize: 19, fontWeight: 700, color: C.pinkDeep, margin: '4px 0', letterSpacing: '-0.01em' }}>{value}</div>
-    <div style={{ fontSize: 10, color: C.grayText }}>{sub}</div>
-  </div>
-);
-
 function WarnCard({ type, status, msg, guide }) {
   const cs = { good: { bg: '#E8F1E8', text: C.goodGreen, ic: '✓' },
                warn: { bg: '#FBEFD3', text: C.warnYellow, ic: '⚠' },
@@ -541,13 +825,26 @@ function WarnCard({ type, status, msg, guide }) {
   );
 }
 
-function FieldworkLog({ data, update }) {
-  // ✅ FIX #6: 정렬 옵션
-  const [sortBy, setSortBy] = useState('desc'); // 'desc' 최신순, 'asc' 오래된순
+// ============================================
+// 📋 FIELDWORK LOG
+// ============================================
+function FieldworkLog({ data, exam, update }) {
+  const [sortBy, setSortBy] = useState('desc');
+  const [recentlyAddedId, setRecentlyAddedId] = useState(null);
 
   const add = () => {
-    const newLog = { id: Date.now(), supervisor: data.mainSupervisor || '', date: todayYMD(), startTime: '', endTime: '', direct: '', activity: '', notes: '' };
+    const id = Date.now();
+    const newLog = {
+      id,
+      supervisor: data.mainSupervisor || '',
+      date: todayYMD(),
+      startTime: '',
+      endTime: '',
+      activities: [],
+      role: exam.hasRoleDivision ? 'service' : null
+    };
     update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
+    setRecentlyAddedId(id);
   };
   const upd = (id, c) => update({ fieldworkLogs: data.fieldworkLogs.map(l => l.id === id ? { ...l, ...c } : l) });
   const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ fieldworkLogs: data.fieldworkLogs.filter(l => l.id !== id) }); };
@@ -562,8 +859,8 @@ function FieldworkLog({ data, update }) {
   return (
     <div>
       <InfoBanner>
-        💡 <strong>입력 시 주의</strong>: <strong>Direct</strong>는 아이와 직접 만나는 시간만, <strong>나머지(자동 Indirect)</strong>는 분석·계획·보고서 등.<br/>
-        슈퍼비전 받는 시간은 여기에 입력하지 말고 <strong>'슈퍼비전' 탭</strong>에 입력하세요.
+        💡 <strong>필드워크 기록</strong>: 행동분석 서비스를 제공한 모든 시간을 입력하세요.
+        {exam.hasRoleDivision && <><br/>QASP-S는 <strong>슈퍼바이저/프로그램 개발 역할</strong>과 <strong>직접 서비스</strong>를 구분해주세요.</>}
       </InfoBanner>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
@@ -582,7 +879,7 @@ function FieldworkLog({ data, update }) {
       </div>
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 회기가 없습니다.' sub='"새 회기" 버튼을 눌러 시작하세요.' /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {sortedLogs.map(log => <FieldworkItem key={log.id} log={log} onUpdate={c => upd(log.id, c)} onDelete={() => del(log.id)} />)}
+          {sortedLogs.map(log => <FieldworkItem key={log.id} log={log} exam={exam} onUpdate={c => upd(log.id, c)} onDelete={() => del(log.id)} defaultExpanded={log.id === recentlyAddedId} />)}
         </div>
       )}
     </div>
@@ -595,58 +892,157 @@ const InfoBanner = ({ children }) => (
   </div>
 );
 
-function FieldworkItem({ log, onUpdate, onDelete }) {
+function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
   const ft = timeToHours(log.startTime, log.endTime);
-  const direct = Number(log.direct) || 0;
-  const indirect = Math.max(0, ft - direct);
-  // ✅ Direct 초과 입력 경고
-  const directOverFt = direct > ft && ft > 0;
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  const selectedActivities = (log.activities && Array.isArray(log.activities))
+    ? log.activities
+    : [];
+
+  const toggleActivity = (activity) => {
+    const next = selectedActivities.includes(activity)
+      ? selectedActivities.filter(a => a !== activity)
+      : [...selectedActivities, activity];
+    onUpdate({ activities: next });
+  };
+
+  // 요약 정보
+  const dateLabel = log.date || '날짜 없음';
+  const timeLabel = (log.startTime && log.endTime) ? `${log.startTime}~${log.endTime}` : '시간 미입력';
+  const roleLabel = exam.hasRoleDivision
+    ? (log.role === 'supervisor' ? '👨‍💼 슈퍼바이저' : '🤝 직접 서비스')
+    : null;
+  const actCount = selectedActivities.length;
 
   return (
     <div style={logCardStyle}>
-      <div style={rowStyle}>
-        <input type="date" value={log.date || ''} onChange={e => onUpdate({ date: e.target.value })} style={logInputStyle} />
-        <input type="text" value={log.supervisor || ''} onChange={e => onUpdate({ supervisor: e.target.value })} style={{ ...logInputStyle, flex: 1 }} placeholder="슈퍼바이저" />
-        <button onClick={onDelete} style={delBtnStyle}>🗑</button>
+      {/* 요약 헤더 (항상 보임) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+           onClick={() => setExpanded(!expanded)}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 100 }}>
+            📅 {dateLabel}
+          </div>
+          <div style={{ fontSize: 13, color: C.grayText }}>
+            ⏰ {timeLabel} <strong style={{ color: C.pinkDeep }}>({fmt(ft)}hr)</strong>
+          </div>
+          {log.supervisor && (
+            <div style={{ fontSize: 13, color: C.grayText }}>👤 {log.supervisor}</div>
+          )}
+          {roleLabel && (
+            <div style={{
+              fontSize: 11, padding: '2px 8px', borderRadius: 4,
+              background: log.role === 'supervisor' ? C.pinkGold : C.pinkLight,
+              color: C.plumDark, fontWeight: 600
+            }}>{roleLabel}</div>
+          )}
+          {actCount > 0 && (
+            <div style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
+              활동 {actCount}개
+            </div>
+          )}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
+        <div style={{ fontSize: 14, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
       </div>
-      <div style={rowStyle}>
-        <Field label="시작"><input type="time" value={log.startTime || ''} onChange={e => onUpdate({ startTime: e.target.value })} style={logInputStyle} /></Field>
-        <Field label="종료"><input type="time" value={log.endTime || ''} onChange={e => onUpdate({ endTime: e.target.value })} style={logInputStyle} /></Field>
-        <Field label="총 시간(자동)"><div style={{ ...logInputStyle, background: '#F5F5F5', color: C.plumDark, fontWeight: 600, minWidth: 80, display: 'flex', alignItems: 'center' }}>{fmt(ft)} hr</div></Field>
-      </div>
-      <div style={rowStyle}>
-        <Field label="Direct (직접 회기, 입력)">
-          <input type="number" step="0.01" min="0" max={ft || undefined} value={log.direct || ''} onChange={e => onUpdate({ direct: e.target.value })}
-                 style={{...logInputStyle, ...(directOverFt && {borderColor: C.dangerRed, background: '#FFF0F0'})}} placeholder="0" />
-        </Field>
-        <Field label="Indirect (자동)"><div style={{ ...logInputStyle, background: '#F5F5F5', color: C.plumDark, fontWeight: 600, minWidth: 80, display: 'flex', alignItems: 'center' }}>{fmt(indirect)} hr</div></Field>
-      </div>
-      {directOverFt && (
-        <div style={{ color: C.dangerRed, fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-          ⚠️ Direct가 총 시간({fmt(ft)}hr)을 초과합니다
+
+      {/* 상세 입력 (펼침) */}
+      {expanded && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.pinkLight}` }}>
+          <div style={rowStyle}>
+            <Field label="날짜">
+              <input type="date" value={log.date || ''} onChange={e => onUpdate({ date: e.target.value })} style={logInputStyle} />
+            </Field>
+            <Field label="슈퍼바이저" flex={1}>
+              <input type="text" value={log.supervisor || ''} onChange={e => onUpdate({ supervisor: e.target.value })} list="supervisor-list" style={logInputStyle} placeholder="이름 입력" />
+            </Field>
+          </div>
+          <div style={rowStyle}>
+            <Field label="시작"><input type="time" value={log.startTime || ''} onChange={e => onUpdate({ startTime: e.target.value })} style={logInputStyle} /></Field>
+            <Field label="종료"><input type="time" value={log.endTime || ''} onChange={e => onUpdate({ endTime: e.target.value })} style={logInputStyle} /></Field>
+            <Field label="총 시간 (자동)">
+              <div style={{ ...logInputStyle, background: '#F5F5F5', color: C.plumDark, fontWeight: 700, minWidth: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>
+                {fmt(ft)} hr
+              </div>
+            </Field>
+          </div>
+
+          {/* QASP-S 역할 선택 */}
+          {exam.hasRoleDivision && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
+                이 세션의 역할 <span style={{ color: C.dangerRed }}>*</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {[
+                  { id: 'supervisor', label: '👨‍💼 슈퍼바이저·프로그램 개발', color: C.goldDeep },
+                  { id: 'service', label: '🤝 직접 서비스', color: C.pinkDeep }
+                ].map(r => {
+                  const isSelected = log.role === r.id;
+                  return (
+                    <button key={r.id} onClick={() => onUpdate({ role: r.id })}
+                      style={{
+                        flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 600,
+                        border: `1.5px solid ${isSelected ? r.color : '#E0D5D8'}`,
+                        borderRadius: 8,
+                        background: isSelected ? r.color : C.white,
+                        color: isSelected ? C.white : C.grayText,
+                        cursor: 'pointer', fontFamily: 'inherit',
+                        transition: 'all 0.15s'
+                      }}>
+                      {isSelected && '✓ '}{r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginBottom: 4 }}>
+            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
+              활동 유형 (여러 개 선택 가능, 참고용)
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {ACTIVITY_TYPES.map(activity => {
+                const isSelected = selectedActivities.includes(activity);
+                return (
+                  <button
+                    key={activity}
+                    onClick={() => toggleActivity(activity)}
+                    style={{
+                      padding: '6px 12px', fontSize: 13, fontWeight: 500,
+                      border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
+                      borderRadius: 16,
+                      background: isSelected ? C.pinkDeep : C.white,
+                      color: isSelected ? C.white : C.grayText,
+                      cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
+                    }}
+                  >
+                    {isSelected ? '✓ ' : ''}{activity}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
-      <div style={rowStyle}>
-        <Field label="활동 유형 (여러 개는 콤마로 구분)" flex={1}>
-          <input type="text" value={log.activity || ''} onChange={e => onUpdate({ activity: e.target.value })} list="activity-types" style={logInputStyle} placeholder="직접 회기, 평가..." />
-          <datalist id="activity-types">{ACTIVITY_TYPES.map(t => <option key={t} value={t} />)}</datalist>
-        </Field>
-      </div>
-      <div style={rowStyle}>
-        <Field label="메모 (선택)" flex={1}>
-          <textarea value={log.notes || ''} onChange={e => onUpdate({ notes: e.target.value })} style={{ ...logInputStyle, minHeight: 50, fontFamily: 'inherit' }} placeholder="활동 내용·특이사항" />
-        </Field>
-      </div>
     </div>
   );
 }
 
+// ============================================
+// 🎓 SUPERVISION LOG
+// ============================================
 function SupervisionLog({ data, update }) {
   const [sortBy, setSortBy] = useState('desc');
+  const [recentlyAddedId, setRecentlyAddedId] = useState(null);
 
   const add = () => {
-    const newLog = { id: Date.now(), date: todayYMD(), group: '', individual: '', supervisor: data.mainSupervisor || '', notes: '' };
+    const id = Date.now();
+    const newLog = { id, date: todayYMD(), hours: '', supervisor: data.mainSupervisor || '', notes: '' };
     update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
+    setRecentlyAddedId(id);
   };
   const upd = (id, c) => update({ supervisionLogs: data.supervisionLogs.map(l => l.id === id ? { ...l, ...c } : l) });
   const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ supervisionLogs: data.supervisionLogs.filter(l => l.id !== id) }); };
@@ -661,8 +1057,8 @@ function SupervisionLog({ data, update }) {
   return (
     <div>
       <InfoBanner>
-        💡 <strong>입력 시 주의</strong>: 한 세션은 보통 <strong>그룹 또는 개별 중 하나</strong>예요. 둘 다 입력하면 둘 다 합산됩니다.<br/>
-        시간은 <strong>슈퍼비전 받은 시간만</strong> (필드워크 시간 따로 입력 X).
+        💡 <strong>슈퍼비전 기록</strong>: QABA 공식 규정에 따르면 매월 제공한 서비스의 <strong>5%</strong>를 슈퍼비전 받아야 합니다.<br/>
+        시간 버튼 클릭 또는 직접 입력 가능합니다.
       </InfoBanner>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
@@ -681,59 +1077,102 @@ function SupervisionLog({ data, update }) {
       </div>
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 슈퍼비전이 없습니다.' sub='"새 슈퍼비전" 버튼을 눌러 시작하세요.' /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {sortedLogs.map(log => {
-            const group = Number(log.group) || 0;
-            const indiv = Number(log.individual) || 0;
-            const bothEntered = group > 0 && indiv > 0;
-            return (
-              <div key={log.id} style={logCardStyle}>
-                <div style={rowStyle}>
-                  <input type="date" value={log.date || ''} onChange={e => upd(log.id, { date: e.target.value })} style={logInputStyle} />
-                  <input type="text" value={log.supervisor || ''} onChange={e => upd(log.id, { supervisor: e.target.value })} style={{ ...logInputStyle, flex: 1 }} placeholder="슈퍼바이저" />
-                  <button onClick={() => del(log.id)} style={delBtnStyle}>🗑</button>
-                </div>
-                <div style={rowStyle}>
-                  <Field label="그룹 (hr)"><input type="number" step="0.01" min="0" value={log.group || ''} onChange={e => upd(log.id, { group: e.target.value })} style={logInputStyle} placeholder="0" /></Field>
-                  <Field label="개별 (hr)"><input type="number" step="0.01" min="0" value={log.individual || ''} onChange={e => upd(log.id, { individual: e.target.value })} style={logInputStyle} placeholder="0" /></Field>
-                </div>
-                {bothEntered && (
-                  <div style={{ color: C.warnYellow, fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-                    ⚠️ 그룹·개별 둘 다 입력됨. 한 세션이라면 하나만 입력하세요.
-                  </div>
-                )}
-                <div style={rowStyle}>
-                  <Field label="메모 (선택)" flex={1}>
-                    <textarea value={log.notes || ''} onChange={e => upd(log.id, { notes: e.target.value })} style={{ ...logInputStyle, minHeight: 50, fontFamily: 'inherit' }} placeholder="논의 내용·피드백 등" />
-                  </Field>
-                </div>
-              </div>
-            );
-          })}
+          {sortedLogs.map(log => (
+            <SupervisionItem
+              key={log.id}
+              log={log}
+              onUpdate={(c) => upd(log.id, c)}
+              onDelete={() => del(log.id)}
+              defaultExpanded={log.id === recentlyAddedId}
+            />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
+function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hrs = Number(log.hours) || 0;
+
+  return (
+    <div style={logCardStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+           onClick={() => setExpanded(!expanded)}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 100 }}>
+            📅 {log.date || '날짜 없음'}
+          </div>
+          <div style={{ fontSize: 13, color: C.grayText }}>
+            ⏱ <strong style={{ color: C.plumDark }}>{fmt(hrs)} hr</strong>
+          </div>
+          {log.supervisor && (
+            <div style={{ fontSize: 13, color: C.grayText }}>👤 {log.supervisor}</div>
+          )}
+          {log.notes && (
+            <div style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              📝 {log.notes}
+            </div>
+          )}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
+        <div style={{ fontSize: 14, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.pinkLight}` }}>
+          <div style={rowStyle}>
+            <Field label="날짜">
+              <input type="date" value={log.date || ''} onChange={e => onUpdate({ date: e.target.value })} style={logInputStyle} />
+            </Field>
+            <Field label="슈퍼바이저" flex={1}>
+              <input type="text" value={log.supervisor || ''} onChange={e => onUpdate({ supervisor: e.target.value })} list="supervisor-list" style={logInputStyle} placeholder="이름 입력" />
+            </Field>
+          </div>
+
+          <SvTimePicker
+            label="슈퍼비전 시간"
+            value={log.hours}
+            onChange={(v) => onUpdate({ hours: v })}
+          />
+
+          <div style={rowStyle}>
+            <Field label="슈퍼비전 내용" flex={1}>
+              <textarea value={log.notes || ''} onChange={e => onUpdate({ notes: e.target.value })} style={{ ...logInputStyle, minHeight: 50, fontFamily: 'inherit' }} placeholder="논의 내용·피드백 등" />
+            </Field>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// 📂 BY SUPERVISOR
+// ============================================
 function BySupervisor({ data }) {
   const bySup = useMemo(() => {
     const m = {};
     data.fieldworkLogs.forEach(l => {
       if (!l.supervisor) return;
-      const ft = timeToHours(l.startTime, l.endTime);
-      const d = Number(l.direct) || 0;
-      if (!m[l.supervisor]) m[l.supervisor] = { supervisor: l.supervisor, direct: 0, indirect: 0, count: 0 };
-      m[l.supervisor].direct += d;
-      m[l.supervisor].indirect += Math.max(0, ft - d);
+      const hrs = timeToHours(l.startTime, l.endTime);
+      if (!m[l.supervisor]) m[l.supervisor] = { supervisor: l.supervisor, fieldwork: 0, supervision: 0, count: 0 };
+      m[l.supervisor].fieldwork += hrs;
       m[l.supervisor].count += 1;
     });
-    return Object.values(m).sort((a, b) => (b.direct + b.indirect) - (a.direct + a.indirect));
-  }, [data.fieldworkLogs]);
+    data.supervisionLogs.forEach(l => {
+      if (!l.supervisor) return;
+      if (!m[l.supervisor]) m[l.supervisor] = { supervisor: l.supervisor, fieldwork: 0, supervision: 0, count: 0 };
+      m[l.supervisor].supervision += Number(l.hours) || 0;
+    });
+    return Object.values(m).sort((a, b) => (b.fieldwork + b.supervision) - (a.fieldwork + a.supervision));
+  }, [data.fieldworkLogs, data.supervisionLogs]);
 
   const chartData = bySup.map(s => ({
     name: s.supervisor,
-    Direct: Math.round(s.direct * 10) / 10,
-    Indirect: Math.round(s.indirect * 10) / 10
+    필드워크: Math.round(s.fieldwork * 10) / 10,
+    슈퍼비전: Math.round(s.supervision * 10) / 10
   }));
 
   return (
@@ -750,8 +1189,8 @@ function BySupervisor({ data }) {
                   <YAxis type="category" dataKey="name" tick={{ fontSize: 13, fill: C.plumDark, fontWeight: 600 }} axisLine={false} tickLine={false} width={80} />
                   <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${fmt(v)} hr`} />
                   <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 8 }} />
-                  <Bar dataKey="Direct" stackId="a" fill={C.goldDeep} />
-                  <Bar dataKey="Indirect" stackId="a" fill={C.pinkDeep} radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="필드워크" stackId="a" fill={C.pinkDeep} />
+                  <Bar dataKey="슈퍼비전" stackId="a" fill={C.plumDark} radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -762,14 +1201,244 @@ function BySupervisor({ data }) {
               <div key={i} style={{ background: C.white, borderRadius: 12, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', borderLeft: `3px solid ${C.pinkDeep}` }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: C.plumDark, marginBottom: 12 }}>👤 {s.supervisor}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.grayText }}>
-                  <div><strong style={{ fontSize: 18, color: C.pinkDeep }}>{fmt(s.direct + s.indirect)}</strong> hr 총</div>
-                  <div>Direct {fmt(s.direct)} · Indirect {fmt(s.indirect)}</div>
+                  <div><strong style={{ fontSize: 18, color: C.pinkDeep }}>{fmt(s.fieldwork + s.supervision)}</strong> hr 총</div>
+                  <div>필드워크 {fmt(s.fieldwork)} · 슈퍼비전 {fmt(s.supervision)}</div>
                   <div style={{ fontSize: 12, fontStyle: 'italic' }}>{s.count}회 세션</div>
                 </div>
               </div>
             ))}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// 📚 EXAM INFO TAB (정확한 공식 규정)
+// ============================================
+function ExamInfoTab() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>📚 시험 정보</h2>
+        <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>QABA(Qualified Applied Behavior Analysis Credentialing Board) 자격 안내</p>
+      </div>
+
+      <InfoBanner>
+        ⚠️ <strong>자세하고 정확한 정보는 반드시 QABA 공식 사이트에서 확인하세요.</strong> 시험 요건은 변경될 수 있습니다.
+      </InfoBanner>
+
+      {/* 자격 준비 단계 */}
+      <Section title="🗺️ 자격 준비 단계 한눈에 보기">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <PrepStep num="1" title="자격 선택" desc="본인 학력에 맞는 자격 선택 (석사 → QBA, 학사 → QASP-S)" />
+          <PrepStep num="2" title="코스워크 이수" desc="QABA 승인 교육기관에서 코스워크 수강 (QBA 270시간 · QASP-S 188시간)" />
+          <PrepStep num="3" title="슈퍼바이저 매칭" desc="QBA 자격 보유자(또는 동급) 슈퍼바이저 확정. 슈퍼비전 합의서 작성" />
+          <PrepStep num="4" title="필드워크 시작" desc="이 시스템에 필드워크 시간 기록 시작. 매월 5% 슈퍼비전도 함께 추적" />
+          <PrepStep num="5" title="요건 충족" desc={"필드워크 총 시간 달성 + 매월 슈퍼비전 5% 충족 + 코스워크 수료 증명"} />
+          <PrepStep num="6" title="시험 응시" desc="QABA 공식 사이트에서 시험 신청 → 응시 → 합격" />
+          <PrepStep num="7" title="자격 유지" desc="2년마다 CEU 이수 + 윤리 강령 동의 + 갱신 신청" />
+        </div>
+      </Section>
+
+      <Section title="🎓 QBA (Qualified Behavior Analyst)">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <SimpleInfoRow label="대상" value="마스터급 행동분석가" />
+          <SimpleInfoRow label="학력" value="석사 학위 (ABA, 교육, 심리, 사회복지 등 관련 분야)" />
+          <SimpleInfoRow label="코스워크" value="270시간" />
+          <SimpleInfoRow label="필드워크" value="2,000시간 (2026년 1월 이후 시작자 기준)" />
+          <SimpleInfoRow label="슈퍼비전" value="매월 서비스 제공 시간의 5%" />
+          <SimpleInfoRow label="갱신" value="2년마다 32 CEU" />
+        </div>
+      </Section>
+
+      <Section title="🎓 QASP-S (Qualified Autism Services Practitioner – Supervisor)">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <SimpleInfoRow label="대상" value="중간급 자폐 서비스 실무자 및 슈퍼바이저" />
+          <SimpleInfoRow label="학력" value="학사 학위 (ABA, 교육, 심리, 사회복지 등 관련 분야)" />
+          <SimpleInfoRow label="코스워크" value="188시간 (슈퍼비전 8시간 포함)" />
+          <SimpleInfoRow label="필드워크" value="1,000시간 (이 중 최소 600시간은 슈퍼바이저·프로그램 개발 역할)" />
+          <SimpleInfoRow label="슈퍼비전" value="매월 서비스 제공 시간의 5%" />
+          <SimpleInfoRow label="갱신" value="2년마다 20 CEU" />
+        </div>
+      </Section>
+
+      {/* FAQ */}
+      <Section title="❓ 자주 묻는 질문">
+        <FAQItem
+          q="필드워크 시간을 슈퍼바이저에게 어떻게 보고하나요?"
+          a="이 시스템의 '슈퍼바이저별' 탭에서 누적 시간을 확인하고, 필요시 백업(JSON)을 전달하세요. 슈퍼바이저는 QABA 온라인 시스템에서 본인이 직접 인증해야 합니다."
+        />
+        <FAQItem
+          q="슈퍼비전 5%는 매월마다 채워야 하나요?"
+          a="네, QABA 공식 규정상 슈퍼비전은 매월 단위로 5%를 충족해야 합니다. 이미 지난 달의 부족분은 다음 달에 보충하기 어려울 수 있으니, 미리 슈퍼바이저와 일정을 잡는 것이 좋습니다."
+        />
+        <FAQItem
+          q="QASP-S에서 '슈퍼바이저 역할 600시간'이란 무엇인가요?"
+          a="단순히 클라이언트와 1:1 작업하는 시간이 아니라, 프로그램을 설계하거나 다른 직원을 슈퍼비전하거나 평가를 진행하는 등 '감독·관리·개발' 성격의 업무를 의미합니다. 1,000시간 중 최소 600시간이 이런 역할이어야 합니다."
+        />
+        <FAQItem
+          q="슈퍼바이저는 누구에게 받을 수 있나요?"
+          a="QBA 자격 보유자(또는 LBA, ABA 영역의 LP 등) 슈퍼바이저에게 받아야 합니다. 슈퍼바이저는 본인 자격이 active 상태여야 하며, 본인 자격증 보드의 윤리 강령을 준수해야 합니다."
+        />
+        <FAQItem
+          q="이 시스템에 입력한 데이터가 공식 인증에 그대로 쓰이나요?"
+          a="아니요. 본 시스템은 본인 추적 보조 도구이며, 공식 인증은 QABA 온라인 시스템을 통해 슈퍼바이저가 별도로 검증·서명해야 합니다."
+        />
+        <FAQItem
+          q="시험에 떨어지면 다시 응시할 수 있나요?"
+          a="네, QABA 정책상 30일 후 재응시 가능합니다. 1년 내 최대 4회까지 응시할 수 있으며, 3·4회 사이에도 30일 간격이 필요합니다."
+        />
+        <FAQItem
+          q="데이터가 사라지면 어떻게 하나요?"
+          a="이 시스템은 브라우저에 데이터를 저장합니다. 정기적으로 상단 '💾 백업' 버튼을 눌러 JSON 파일을 보관하세요. 다른 기기 사용 시 '📂 복원'으로 불러올 수 있습니다."
+        />
+      </Section>
+
+      <Section title="🏢 검단ABA언어행동연구소">
+        <div style={{ padding: 20, background: 'linear-gradient(135deg, #FDF7F9 0%, #FAD5DA 100%)', borderRadius: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', color: C.pinkDeep, fontSize: 17 }}>전문 ABA 서비스 제공 기관</h3>
+          <p style={{ margin: 0, fontSize: 13, color: C.grayHead, lineHeight: 1.7 }}>
+            검단ABA언어행동연구소는 ABA 전문 임상 서비스와 자격 준비생 멘토링을 제공합니다.
+          </p>
+          <ul style={{ margin: '12px 0 0 0', paddingLeft: 20, fontSize: 13, color: C.grayHead, lineHeight: 1.7 }}>
+            <li>ABA 임상 서비스 (개별·그룹)</li>
+            <li>QBA·QASP-S 자격 준비 멘토링</li>
+            <li>슈퍼비전 제공</li>
+            <li>부모교육 및 훈련</li>
+            <li>전문가 양성 프로그램</li>
+          </ul>
+        </div>
+      </Section>
+
+      <Section title="🔗 공식 사이트 및 참고 자료">
+        <div style={{ display: 'grid', gap: 8 }}>
+          <LinkRow url="https://qababoard.com" label="QABA 공식 사이트" />
+          <LinkRow url="https://qababoard.com/pages/qualified-behavior-analyst-credential/" label="QBA 자격 요건 안내 (공식)" />
+          <LinkRow url="https://qababoard.com/pages/qualified-autism-services-practitioner-supervisor/" label="QASP-S 자격 요건 안내 (공식)" />
+        </div>
+      </Section>
+
+      <div style={{ padding: 16, background: '#FFF8E7', borderRadius: 8, border: `1px solid ${C.pinkGold}` }}>
+        <p style={{ margin: 0, fontSize: 12, color: '#7A5538', lineHeight: 1.7 }}>
+          📌 본 자료는 자격 준비를 보조하기 위한 도구이며, 자격 인증을 보장하지 않습니다. 시험 요건·일정·응시료 등은 QABA 공식 사이트에서 직접 확인하세요.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PrepStep({ num, title, desc }) {
+  return (
+    <div style={{ display: 'flex', gap: 14, padding: 14, background: C.pinkPale, borderRadius: 8, alignItems: 'flex-start' }}>
+      <div style={{
+        flexShrink: 0, width: 32, height: 32, borderRadius: '50%',
+        background: C.pinkDeep, color: C.white,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 14, fontWeight: 700
+      }}>{num}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 12, color: C.grayHead, lineHeight: 1.6 }}>{desc}</div>
+      </div>
+    </div>
+  );
+}
+
+function FAQItem({ q, a }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginBottom: 8, border: `1px solid ${C.pinkLight}`, borderRadius: 8, overflow: 'hidden' }}>
+      <button onClick={() => setOpen(!open)}
+        style={{ width: '100%', padding: '12px 16px', background: open ? C.pinkPale : C.white, border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: 'inherit' }}>
+        <span style={{ fontSize: 13, color: C.plumDark, fontWeight: 600 }}>Q. {q}</span>
+        <span style={{ fontSize: 14, color: C.pinkDeep, transform: open ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s', marginLeft: 12 }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: '12px 16px', background: C.pinkPale, borderTop: `1px solid ${C.pinkLight}`, fontSize: 13, color: C.grayHead, lineHeight: 1.7 }}>
+          A. {a}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimpleInfoRow({ label, value }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 16, padding: '10px 12px', borderBottom: `1px solid ${C.pinkSoft}` }}>
+      <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>{label}</span>
+      <span style={{ fontSize: 13, color: C.plumDark }}>{value}</span>
+    </div>
+  );
+}
+
+function LinkRow({ url, label }) {
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer"
+       style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, background: C.pinkPale, borderRadius: 8, textDecoration: 'none', color: C.plumDark, transition: 'background 0.15s' }}
+       onMouseEnter={e => e.currentTarget.style.background = C.pinkLight}
+       onMouseLeave={e => e.currentTarget.style.background = C.pinkPale}>
+      <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 12, color: C.pinkDeep }}>↗</span>
+    </a>
+  );
+}
+
+// ============================================
+// SvTimePicker - 슈퍼비전 시간 빠른 선택
+// ============================================
+function SvTimePicker({ label, value, onChange }) {
+  const presets = [
+    { label: '30분', value: 0.5 },
+    { label: '1시간', value: 1 },
+    { label: '1.5시간', value: 1.5 },
+    { label: '2시간', value: 2 },
+  ];
+  const numValue = Number(value) || 0;
+  const isCustom = numValue > 0 && !presets.some(p => p.value === numValue);
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
+        {label}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+        {presets.map(p => {
+          const isSelected = numValue === p.value;
+          return (
+            <button
+              key={p.value}
+              onClick={() => onChange(isSelected ? '' : p.value)}
+              style={{
+                padding: '8px 16px', fontSize: 13, fontWeight: 600,
+                border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
+                borderRadius: 8,
+                background: isSelected ? C.pinkDeep : C.white,
+                color: isSelected ? C.white : C.grayText,
+                cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
+              }}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4 }}>
+          <span style={{ fontSize: 12, color: C.grayText }}>또는</span>
+          <input
+            type="number" step="0.25" min="0"
+            value={isCustom ? value : ''}
+            onChange={e => onChange(e.target.value)}
+            placeholder="직접 입력"
+            style={{ ...logInputStyle, width: 100, padding: '7px 10px' }}
+          />
+          <span style={{ fontSize: 12, color: C.grayText }}>hr</span>
+        </div>
+      </div>
+      {numValue > 0 && (
+        <div style={{ fontSize: 11, color: C.plumDark, marginTop: 6, fontWeight: 500 }}>
+          ✓ {fmt(numValue)} hr 기록됨
+        </div>
       )}
     </div>
   );
@@ -795,6 +1464,9 @@ const logInputStyle = { padding: '9px 12px', fontSize: 14, border: '1px solid #E
 const addBtnStyle = { padding: '10px 20px', fontSize: 14, fontWeight: 600, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer', boxShadow: '0 2px 4px rgba(216,136,150,0.3)' };
 const delBtnStyle = { padding: '8px 12px', background: '#FFF0F0', border: '1px solid #FFD0D0', color: C.dangerRed, borderRadius: 6, cursor: 'pointer', fontSize: 16 };
 
+// ============================================
+// 📖 GUIDE MODAL
+// ============================================
 function GuideModal({ onClose }) {
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
@@ -807,39 +1479,32 @@ function GuideModal({ onClose }) {
           <h3 style={{ color: C.plumDark }}>📌 시작하기</h3>
           <ol>
             <li>상단 우측에서 응시할 시험 선택 (QBA 또는 QASP-S)</li>
-            <li>대시보드 하단 사용자 정보 입력 (이름·슈퍼바이저)</li>
+            <li>대시보드 상단 사용자 정보 입력 (이름·슈퍼바이저)</li>
             <li>"필드워크" 탭에서 매 회기마다 입력</li>
             <li>"슈퍼비전" 탭에서 슈퍼비전 받은 날마다 입력</li>
-            <li>대시보드에서 진행률·페이스·한도 확인</li>
+            <li>대시보드에서 진행률·페이스·5% 충족도 확인</li>
           </ol>
 
-          <h3 style={{ color: C.plumDark }}>🎓 시험 기준</h3>
+          <h3 style={{ color: C.plumDark }}>🎓 자격 기준 (QABA 공식)</h3>
           <ul>
-            <li><strong>QBA</strong>: Direct 800hr (최대) + Indirect 1,200hr (최소) = 총 2,000hr · 슈퍼비전 100hr (그룹 50hr 이하, 개별 50hr 이상)</li>
-            <li><strong>QASP-S</strong>: Direct 400hr (최대) + Indirect 600hr (최소) = 총 1,000hr · 슈퍼비전 50hr (그룹 25hr 이하, 개별 25hr 이상)</li>
+            <li><strong>QBA</strong>: 필드워크 2,000시간 + 슈퍼비전 5%</li>
+            <li><strong>QASP-S</strong>: 필드워크 1,000시간 (최소 600시간 슈퍼바이저 역할) + 슈퍼비전 5%</li>
           </ul>
 
-          <h3 style={{ color: C.plumDark }}>💡 Direct vs Indirect</h3>
-          <ul>
-            <li><strong>Direct</strong>: 현장에서 아이와 직접 만나는 시간. <em>최대 한도</em>가 있어 초과해도 더 인정 안 됨</li>
-            <li><strong>Indirect</strong>: 분석·보고서·계획 등 사무 시간. <em>최소 요구</em>량 이상 채워야 자격 인정</li>
-            <li>→ 한 회기에 둘 다 있으면 Direct만 입력, 나머지는 자동 Indirect</li>
-          </ul>
+          <h3 style={{ color: C.plumDark }}>💡 슈퍼비전 5% 규정</h3>
+          <p>매월 제공한 서비스 시간의 <strong>5%</strong>를 슈퍼비전 받아야 합니다.
+          예: 한 달에 100시간 일했다면 5시간 슈퍼비전 필요.</p>
 
-          <h3 style={{ color: C.plumDark }}>🎓 슈퍼비전 (Group vs Individual)</h3>
-          <ul>
-            <li><strong>Group</strong>: 여러 슈퍼바이지가 함께 받는 슈퍼비전 (<em>최대 한도</em>)</li>
-            <li><strong>Individual</strong>: 1:1 슈퍼비전 (<em>최소 요구</em>)</li>
-            <li>→ 한 세션은 보통 둘 중 하나만</li>
-          </ul>
+          <h3 style={{ color: C.plumDark }}>👨‍💼 QASP-S 역할 구분</h3>
+          <p>QASP-S는 1,000시간 중 <strong>최소 600시간</strong>이 슈퍼바이저 또는 프로그램 개발 역할이어야 합니다.
+          매 회기마다 역할을 선택해주세요.</p>
 
           <h3 style={{ color: C.plumDark }}>📊 대시보드 차트</h3>
           <ul>
-            <li><strong>전체 진행률</strong>: 목표 대비 현재 위치 (라디얼)</li>
-            <li><strong>Direct vs Indirect</strong>: 두 시간의 비율 (도넛)</li>
-            <li><strong>월별 필드워크·슈퍼비전 추이</strong>: 막대 + 누적 추세선</li>
-            <li><strong>Direct·Indirect 월별</strong>: 영역 차트로 흐름</li>
-            <li><strong>그룹·개별 슈퍼비전 월별</strong>: 한도 위반 조기 발견</li>
+            <li><strong>전체 진행률</strong>: 필드워크 누적 목표 대비 %</li>
+            <li><strong>월별 추이</strong>: 막대(월별) + 추세선(누적)</li>
+            <li><strong>슈퍼비전 5% 비교</strong>: 필요량 vs 실제 받은 양</li>
+            <li><strong>역할별 분포 (QASP-S)</strong>: 슈퍼바이저 vs 직접 서비스</li>
           </ul>
 
           <h3 style={{ color: C.plumDark }}>💾 데이터 백업·복원</h3>
@@ -847,10 +1512,9 @@ function GuideModal({ onClose }) {
 
           <h3 style={{ color: C.plumDark }}>⚠️ 주의사항</h3>
           <ul>
-            <li>본 자료는 자격 준비 보조용이며, 공식 기관 가이드를 우선하세요</li>
+            <li>본 자료는 자격 준비 보조용이며, QABA 공식 가이드를 우선하세요</li>
             <li>모든 데이터는 현재 브라우저에 저장됩니다</li>
             <li>브라우저 데이터 삭제 시 기록도 함께 삭제됩니다</li>
-            <li>다른 기기에서 보려면 백업 파일로 복원하세요</li>
           </ul>
         </div>
       </div>
