@@ -11,22 +11,25 @@ import {
 const EXAM_DATA = {
   'QBA': {
     total: 2000,            // 필드워크 총 시간
-    svPercent: 5,           // 슈퍼비전: 서비스의 5%
-    hasRoleDivision: false  // 역할 구분 없음
+    svPercent: 5            // 슈퍼비전: 서비스의 5%
   },
   'QASP-S': {
-    total: 1000,                // 필드워크 총 시간
-    svPercent: 5,               // 슈퍼비전: 서비스의 5%
-    hasRoleDivision: true,      // 슈퍼바이저 역할 구분 있음
-    supervisorMin: 600,         // 슈퍼바이저/프로그램 개발 최소 600시간
-    serviceMax: 400             // 직접 서비스 최대 400시간
+    total: 1000,            // 필드워크 총 시간
+    svPercent: 5            // 슈퍼비전: 서비스의 5%
   }
 };
 
-const ACTIVITY_TYPES = [
-  '직접 회기', '그룹 회기', '평가', '부모교육', '데이터 분석',
-  '회기 계획', '보고서 작성', '자료 제작', '사례 회의', '자기학습'
+const DIRECT_ACTIVITIES = [
+  '직접 회기', '그룹 회기', '평가', '부모교육 (아동 동석)'
 ];
+
+const INDIRECT_ACTIVITIES = [
+  '데이터 분석', '회기 계획', '보고서 작성',
+  '자료 제작', '사례 회의', '자기학습', '부모상담'
+];
+
+// 호환성 (기존 ACTIVITY_TYPES 참조 코드용)
+const ACTIVITY_TYPES = [...DIRECT_ACTIVITIES, ...INDIRECT_ACTIVITIES];
 
 const C = {
   pinkDeep: '#D88896', pinkMid: '#E8A8B0', pinkLight: '#FAD5DA',
@@ -39,24 +42,24 @@ const C = {
 
 const STORAGE_KEY = 'geomdan_aba_qualification_data';
 
-// 레거시 데이터 마이그레이션 (v3 → v4)
+// 레거시 데이터 마이그레이션
 const migrateData = (raw) => {
   if (!raw) return null;
   let migrated = false;
   const d = { ...raw };
 
-  // 필드워크: direct 필드 → 역할 선택 + activities 정리
+  // 필드워크 로그 정리
   if (Array.isArray(d.fieldworkLogs)) {
     d.fieldworkLogs = d.fieldworkLogs.map(log => {
       const out = { ...log };
-      // direct 필드 제거 (v4에서 사용 안 함)
-      if ('direct' in out) {
-        delete out.direct;
-        migrated = true;
-      }
       // notes 필드 제거 (필드워크는 메모 없음)
       if ('notes' in out) {
         delete out.notes;
+        migrated = true;
+      }
+      // role 필드 제거 (역할 구분 없앰)
+      if ('role' in out) {
+        delete out.role;
         migrated = true;
       }
       // activity 문자열 → activities 배열
@@ -64,9 +67,9 @@ const migrateData = (raw) => {
         out.activities = out.activity.split(',').map(s => s.trim()).filter(Boolean);
         migrated = true;
       }
-      // role 필드 없으면 기본값 (QASP-S 사용자 대비)
-      if (!out.role) {
-        out.role = 'service';
+      // customActivities 없으면 빈 배열
+      if (!Array.isArray(out.customActivities)) {
+        out.customActivities = [];
       }
       return out;
     });
@@ -207,18 +210,19 @@ export default function App() {
 
   // 통계 계산
   const stats = useMemo(() => {
-    // 필드워크
-    const fwTotal = data.fieldworkLogs.reduce((s, l) => s + timeToHours(l.startTime, l.endTime), 0);
+    // 필드워크 누적
+    let fwTotal = 0;
+    let directTotal = 0;
+    let indirectTotal = 0;
 
-    // QASP-S 역할 구분
-    let supervisorRole = 0, serviceRole = 0;
-    if (exam.hasRoleDivision) {
-      data.fieldworkLogs.forEach(l => {
-        const hrs = timeToHours(l.startTime, l.endTime);
-        if (l.role === 'supervisor') supervisorRole += hrs;
-        else serviceRole += hrs;
-      });
-    }
+    data.fieldworkLogs.forEach(l => {
+      const hrs = timeToHours(l.startTime, l.endTime);
+      const direct = Math.min(Number(l.direct) || 0, hrs); // 총 시간 초과는 무시
+      const indirect = Math.max(0, hrs - direct);
+      fwTotal += hrs;
+      directTotal += direct;
+      indirectTotal += indirect;
+    });
 
     // 슈퍼비전
     const svTotal = data.supervisionLogs.reduce((s, l) => s + (Number(l.hours) || 0), 0);
@@ -233,17 +237,17 @@ export default function App() {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
       const hrs = timeToHours(l.startTime, l.endTime);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, supervisor: 0, service: 0 };
+      const direct = Math.min(Number(l.direct) || 0, hrs);
+      const indirect = Math.max(0, hrs - direct);
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, direct: 0, indirect: 0 };
       monthMap[ym].fw += hrs;
-      if (exam.hasRoleDivision) {
-        if (l.role === 'supervisor') monthMap[ym].supervisor += hrs;
-        else monthMap[ym].service += hrs;
-      }
+      monthMap[ym].direct += direct;
+      monthMap[ym].indirect += indirect;
     });
     data.supervisionLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, supervisor: 0, service: 0 };
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, direct: 0, indirect: 0 };
       monthMap[ym].sv += Number(l.hours) || 0;
     });
     const monthlyData = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym))
@@ -253,6 +257,8 @@ export default function App() {
         sv: m.sv,
         필드워크: Math.round(m.fw * 10) / 10,
         슈퍼비전: Math.round(m.sv * 10) / 10,
+        Direct: Math.round(m.direct * 10) / 10,
+        Indirect: Math.round(m.indirect * 10) / 10,
         필요슈퍼비전: Math.round(m.fw * (exam.svPercent / 100) * 10) / 10,
         누적: 0
       }));
@@ -305,8 +311,8 @@ export default function App() {
     }));
 
     return {
-      fwTotal, svTotal, svRequired, svDiff,
-      supervisorRole, serviceRole,
+      fwTotal, directTotal, indirectTotal,
+      svTotal, svRequired, svDiff,
       monthlyData, weeklyPace, remaining, estCompletion,
       thisMonthFW: thisMonth.fw, thisMonthSV: thisMonth.sv, thisMonthSvRequired,
       monthsShort
@@ -332,14 +338,6 @@ export default function App() {
       } else {
         w.push({ type: '슈퍼비전 5%', status: 'good', msg: `+${fmt(stats.svDiff)}hr 여유`, guide: `현재 ${fmt(stats.svRequired)}hr 필요` });
       }
-    }
-
-    // QASP-S 슈퍼바이저 역할
-    if (exam.hasRoleDivision) {
-      const supDiff = exam.supervisorMin - stats.supervisorRole;
-      w.push(supDiff > 0
-        ? { type: '슈퍼바이저 역할', status: 'warn', msg: `${fmtI(supDiff)}hr 더 필요`, guide: `${fmtI(exam.supervisorMin)}hr 이상 필수` }
-        : { type: '슈퍼바이저 역할', status: 'good', msg: '✓ 달성!', guide: `${fmtI(exam.supervisorMin)}hr 이상 필수` });
     }
 
     return w;
@@ -466,7 +464,7 @@ function WelcomeCard({ examType }) {
       </div>
       <div style={{ marginTop: 16, padding: 12, background: C.white, borderRadius: 8, fontSize: 12, color: C.grayHead, lineHeight: 1.6 }}>
         💡 <strong>{examType} 기준</strong>: 필드워크 <strong>{isQASP ? '1,000' : '2,000'}시간</strong>
-        {isQASP && ' (이 중 슈퍼바이저 역할 600시간 이상)'}
+        {isQASP && ' (이 중 일부 슈퍼바이저 역할 권장)'}
         + 매월 슈퍼비전 <strong>5%</strong>
       </div>
     </div>
@@ -597,23 +595,27 @@ function Dashboard({ data, stats, exam, warnings, update }) {
               sub={stats.fwTotal > 0 ? `5% 필요량 ${fmt(stats.svRequired)}hr` : '필드워크 입력 시 자동'}
               color={C.plumDark}
             />
-            {exam.hasRoleDivision ? (
-              <StatBox
-                label="👨‍💼 슈퍼바이저 역할"
-                value={fmt(stats.supervisorRole)}
-                unit="hr"
-                sub={`최소 ${fmtI(exam.supervisorMin)}hr`}
-                color={C.goldDeep}
-              />
-            ) : (
-              <StatBox
-                label="⏳ 남은 시간"
-                value={fmtI(stats.remaining)}
-                unit="hr"
-                sub="목표까지"
-                color={C.pinkMid}
-              />
-            )}
+            <StatBox
+              label="📍 Direct"
+              value={fmt(stats.directTotal)}
+              unit="hr"
+              sub={stats.fwTotal > 0 ? `${((stats.directTotal / stats.fwTotal) * 100).toFixed(0)}%` : '직접 시간'}
+              color={C.goldDeep}
+            />
+            <StatBox
+              label="📝 Indirect"
+              value={fmt(stats.indirectTotal)}
+              unit="hr"
+              sub={stats.fwTotal > 0 ? `${((stats.indirectTotal / stats.fwTotal) * 100).toFixed(0)}%` : '간접 시간'}
+              color={C.goodGreen}
+            />
+            <StatBox
+              label="⏳ 남은 시간"
+              value={fmtI(stats.remaining)}
+              unit="hr"
+              sub="목표까지"
+              color={C.pinkMid}
+            />
             <StatBox
               label="⚡ 주당 페이스"
               value={fmt(stats.weeklyPace)}
@@ -654,9 +656,10 @@ function Dashboard({ data, stats, exam, warnings, update }) {
                        label={{ value: '누적(hr)', angle: 90, position: 'insideRight', style: { fill: C.grayText, fontSize: 11 } }} />
                 <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${fmt(v)} hr`, n]} />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 8 }} />
-                <Bar yAxisId="left" dataKey="필드워크" fill={C.pinkDeep} radius={[4, 4, 0, 0]} barSize={20} />
+                <Bar yAxisId="left" dataKey="Direct" stackId="fw" fill={C.goldDeep} radius={[0, 0, 0, 0]} barSize={20} />
+                <Bar yAxisId="left" dataKey="Indirect" stackId="fw" fill={C.goodGreen} radius={[4, 4, 0, 0]} barSize={20} />
                 <Bar yAxisId="left" dataKey="슈퍼비전" fill={C.plumDark} radius={[4, 4, 0, 0]} barSize={20} />
-                <Line yAxisId="right" type="monotone" dataKey="누적" stroke={C.goldDeep} strokeWidth={2.5} dot={{ fill: C.goldDeep, r: 4 }} activeDot={{ r: 6 }} />
+                <Line yAxisId="right" type="monotone" dataKey="누적" stroke={C.pinkDeep} strokeWidth={2.5} dot={{ fill: C.pinkDeep, r: 4 }} activeDot={{ r: 6 }} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -840,8 +843,9 @@ function FieldworkLog({ data, exam, update }) {
       date: todayYMD(),
       startTime: '',
       endTime: '',
+      direct: '',
       activities: [],
-      role: exam.hasRoleDivision ? 'service' : null
+      customActivities: []
     };
     update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
     setRecentlyAddedId(id);
@@ -859,8 +863,8 @@ function FieldworkLog({ data, exam, update }) {
   return (
     <div>
       <InfoBanner>
-        💡 <strong>필드워크 기록</strong>: 행동분석 서비스를 제공한 모든 시간을 입력하세요.
-        {exam.hasRoleDivision && <><br/>QASP-S는 <strong>슈퍼바이저/프로그램 개발 역할</strong>과 <strong>직접 서비스</strong>를 구분해주세요.</>}
+        💡 <strong>필드워크 기록</strong>: 시작·종료 시간을 입력하면 <strong>총 시간 자동 계산</strong>됩니다.<br/>
+        <strong>Direct (직접) 시간</strong>을 입력하면 나머지는 <strong>Indirect (간접)</strong>로 자동 분류됩니다.
       </InfoBanner>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
@@ -894,6 +898,9 @@ const InfoBanner = ({ children }) => (
 
 function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
   const ft = timeToHours(log.startTime, log.endTime);
+  const direct = Number(log.direct) || 0;
+  const indirect = Math.max(0, ft - direct);
+  const directOver = direct > ft && ft > 0;
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   const selectedActivities = (log.activities && Array.isArray(log.activities))
@@ -910,10 +917,7 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
   // 요약 정보
   const dateLabel = log.date || '날짜 없음';
   const timeLabel = (log.startTime && log.endTime) ? `${log.startTime}~${log.endTime}` : '시간 미입력';
-  const roleLabel = exam.hasRoleDivision
-    ? (log.role === 'supervisor' ? '👨‍💼 슈퍼바이저' : '🤝 직접 서비스')
-    : null;
-  const actCount = selectedActivities.length;
+  const totalActCount = selectedActivities.length + (log.customActivities?.length || 0);
 
   return (
     <div style={logCardStyle}>
@@ -927,19 +931,18 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
           <div style={{ fontSize: 13, color: C.grayText }}>
             ⏰ {timeLabel} <strong style={{ color: C.pinkDeep }}>({fmt(ft)}hr)</strong>
           </div>
+          {ft > 0 && (
+            <div style={{ fontSize: 12, color: C.grayText, display: 'flex', gap: 8 }}>
+              <span style={{ color: C.goldDeep, fontWeight: 600 }}>D {fmt(direct)}</span>
+              <span style={{ color: C.goodGreen, fontWeight: 600 }}>I {fmt(indirect)}</span>
+            </div>
+          )}
           {log.supervisor && (
             <div style={{ fontSize: 13, color: C.grayText }}>👤 {log.supervisor}</div>
           )}
-          {roleLabel && (
-            <div style={{
-              fontSize: 11, padding: '2px 8px', borderRadius: 4,
-              background: log.role === 'supervisor' ? C.pinkGold : C.pinkLight,
-              color: C.plumDark, fontWeight: 600
-            }}>{roleLabel}</div>
-          )}
-          {actCount > 0 && (
+          {totalActCount > 0 && (
             <div style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
-              활동 {actCount}개
+              활동 {totalActCount}개
             </div>
           )}
         </div>
@@ -968,65 +971,148 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
             </Field>
           </div>
 
-          {/* QASP-S 역할 선택 */}
-          {exam.hasRoleDivision && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
-                이 세션의 역할 <span style={{ color: C.dangerRed }}>*</span>
+          {/* Direct / Indirect 시간 분배 */}
+          <div style={rowStyle}>
+            <Field label={<>Direct (직접) <span style={{ color: C.dangerRed }}>*</span></>}>
+              <input
+                type="number" step="0.25" min="0" max={ft || undefined}
+                value={log.direct ?? ''}
+                onChange={e => onUpdate({ direct: e.target.value })}
+                style={{ ...logInputStyle, ...(directOver && { borderColor: C.dangerRed, background: '#FFF0F0' }) }}
+                placeholder="0"
+              />
+            </Field>
+            <Field label="Indirect (자동)">
+              <div style={{ ...logInputStyle, background: '#F5F5F5', color: C.goodGreen, fontWeight: 700, minWidth: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>
+                {fmt(indirect)} hr
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {[
-                  { id: 'supervisor', label: '👨‍💼 슈퍼바이저·프로그램 개발', color: C.goldDeep },
-                  { id: 'service', label: '🤝 직접 서비스', color: C.pinkDeep }
-                ].map(r => {
-                  const isSelected = log.role === r.id;
+            </Field>
+          </div>
+          {directOver && (
+            <div style={{ color: C.dangerRed, fontSize: 12, marginTop: -8, marginBottom: 12 }}>
+              ⚠️ Direct가 총 시간({fmt(ft)}hr)을 초과합니다
+            </div>
+          )}
+
+          {/* 활동 유형 - Direct/Indirect 그룹 + 자유 입력 */}
+          <div style={{ marginBottom: 4 }}>
+            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
+              활동 유형 (여러 개 선택 가능, 참고용)
+            </div>
+
+            {/* Direct 그룹 */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: C.goldDeep, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>
+                📍 DIRECT (직접)
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {DIRECT_ACTIVITIES.map(activity => {
+                  const isSelected = selectedActivities.includes(activity);
                   return (
-                    <button key={r.id} onClick={() => onUpdate({ role: r.id })}
+                    <button key={activity} onClick={() => toggleActivity(activity)}
                       style={{
-                        flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 600,
-                        border: `1.5px solid ${isSelected ? r.color : '#E0D5D8'}`,
-                        borderRadius: 8,
-                        background: isSelected ? r.color : C.white,
+                        padding: '6px 12px', fontSize: 13, fontWeight: 500,
+                        border: `1.5px solid ${isSelected ? C.goldDeep : '#E0D5D8'}`,
+                        borderRadius: 16,
+                        background: isSelected ? C.goldDeep : C.white,
                         color: isSelected ? C.white : C.grayText,
-                        cursor: 'pointer', fontFamily: 'inherit',
-                        transition: 'all 0.15s'
+                        cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
                       }}>
-                      {isSelected && '✓ '}{r.label}
+                      {isSelected ? '✓ ' : ''}{activity}
                     </button>
                   );
                 })}
               </div>
             </div>
-          )}
 
-          <div style={{ marginBottom: 4 }}>
-            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
-              활동 유형 (여러 개 선택 가능, 참고용)
+            {/* Indirect 그룹 */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: C.goodGreen, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>
+                📝 INDIRECT (간접)
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {INDIRECT_ACTIVITIES.map(activity => {
+                  const isSelected = selectedActivities.includes(activity);
+                  return (
+                    <button key={activity} onClick={() => toggleActivity(activity)}
+                      style={{
+                        padding: '6px 12px', fontSize: 13, fontWeight: 500,
+                        border: `1.5px solid ${isSelected ? C.goodGreen : '#E0D5D8'}`,
+                        borderRadius: 16,
+                        background: isSelected ? C.goodGreen : C.white,
+                        color: isSelected ? C.white : C.grayText,
+                        cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
+                      }}>
+                      {isSelected ? '✓ ' : ''}{activity}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {ACTIVITY_TYPES.map(activity => {
-                const isSelected = selectedActivities.includes(activity);
-                return (
-                  <button
-                    key={activity}
-                    onClick={() => toggleActivity(activity)}
-                    style={{
-                      padding: '6px 12px', fontSize: 13, fontWeight: 500,
-                      border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
-                      borderRadius: 16,
-                      background: isSelected ? C.pinkDeep : C.white,
-                      color: isSelected ? C.white : C.grayText,
-                      cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
-                    }}
-                  >
-                    {isSelected ? '✓ ' : ''}{activity}
-                  </button>
-                );
-              })}
-            </div>
+
+            {/* 사용자 추가 활동 */}
+            <CustomActivityInput
+              customActivities={log.customActivities || []}
+              onChange={(list) => onUpdate({ customActivities: list })}
+            />
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// 사용자 자유 입력 활동 컴포넌트
+function CustomActivityInput({ customActivities, onChange }) {
+  const [newAct, setNewAct] = useState('');
+
+  const add = () => {
+    const v = newAct.trim();
+    if (!v) return;
+    if (customActivities.includes(v)) return;
+    onChange([...customActivities, v]);
+    setNewAct('');
+  };
+
+  const remove = (act) => {
+    onChange(customActivities.filter(a => a !== act));
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: C.plumDark, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>
+        ✏️ 직접 추가
+      </div>
+      {customActivities.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {customActivities.map(act => (
+            <div key={act} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '6px 8px 6px 12px', background: C.pinkSoft,
+              border: `1.5px solid ${C.pinkLight}`, borderRadius: 16,
+              fontSize: 13, color: C.plumDark, fontWeight: 500
+            }}>
+              <span>{act}</span>
+              <button onClick={() => remove(act)}
+                      style={{ background: 'none', border: 'none', color: C.grayText, cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          type="text"
+          value={newAct}
+          onChange={e => setNewAct(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          placeholder="활동명 입력 후 Enter"
+          style={{ ...logInputStyle, padding: '7px 10px', fontSize: 13, flex: 1 }}
+        />
+        <button onClick={add}
+                style={{ padding: '7px 14px', background: C.pinkDeep, color: C.white, border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          + 추가
+        </button>
+      </div>
     </div>
   );
 }
@@ -1495,16 +1581,16 @@ function GuideModal({ onClose }) {
           <p>매월 제공한 서비스 시간의 <strong>5%</strong>를 슈퍼비전 받아야 합니다.
           예: 한 달에 100시간 일했다면 5시간 슈퍼비전 필요.</p>
 
-          <h3 style={{ color: C.plumDark }}>👨‍💼 QASP-S 역할 구분</h3>
-          <p>QASP-S는 1,000시간 중 <strong>최소 600시간</strong>이 슈퍼바이저 또는 프로그램 개발 역할이어야 합니다.
-          매 회기마다 역할을 선택해주세요.</p>
+          <h3 style={{ color: C.plumDark }}>📍 Direct vs Indirect</h3>
+          <p><strong>Direct (직접)</strong>: 클라이언트와 직접 만나는 시간 (회기, 평가, 부모교육 등)<br/>
+          <strong>Indirect (간접)</strong>: 분석·계획·보고서·자료제작 등 사무 시간<br/>
+          필드워크 입력 시 Direct 시간만 입력하면 나머지는 자동 Indirect로 분류됩니다.</p>
 
           <h3 style={{ color: C.plumDark }}>📊 대시보드 차트</h3>
           <ul>
             <li><strong>전체 진행률</strong>: 필드워크 누적 목표 대비 %</li>
             <li><strong>월별 추이</strong>: 막대(월별) + 추세선(누적)</li>
             <li><strong>슈퍼비전 5% 비교</strong>: 필요량 vs 실제 받은 양</li>
-            <li><strong>역할별 분포 (QASP-S)</strong>: 슈퍼바이저 vs 직접 서비스</li>
           </ul>
 
           <h3 style={{ color: C.plumDark }}>💾 데이터 백업·복원</h3>
