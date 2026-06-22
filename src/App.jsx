@@ -1,8 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import {
-  ResponsiveContainer, ComposedChart, Bar, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend
-} from 'recharts';
 
 // ============================================
 // QABA 공식 규정 기준 데이터
@@ -251,35 +247,40 @@ export default function App() {
       if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, direct: 0, indirect: 0 };
       monthMap[ym].sv += Number(l.hours) || 0;
     });
-    const monthlyData = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym))
-      .map(m => ({
-        ym: m.ym,
-        fw: m.fw,
-        sv: m.sv,
-        필드워크: Math.round(m.fw * 10) / 10,
-        슈퍼비전: Math.round(m.sv * 10) / 10,
-        Direct: Math.round(m.direct * 10) / 10,
-        Indirect: Math.round(m.indirect * 10) / 10,
-        필요슈퍼비전: Math.round(m.fw * (exam.svPercent / 100) * 10) / 10,
-        누적: 0
-      }));
-    let cum = 0;
-    monthlyData.forEach(m => { cum += m.필드워크; m.누적 = Math.round(cum * 10) / 10; });
+    const monthlyArr = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym));
 
-    // 페이스
+    // 페이스 - 최근 4주 페이스로 계산 (더 정확한 트렌드 반영)
+    const now = new Date();
+    const fourWeeksAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
+
+    // 최근 4주 동안의 필드워크
+    const recentFw = data.fieldworkLogs.reduce((s, l) => {
+      if (!l.date) return s;
+      const logDate = parseLocalDate(l.date);
+      if (logDate >= fourWeeksAgo && logDate <= now) {
+        return s + timeToHours(l.startTime, l.endTime);
+      }
+      return s;
+    }, 0);
+
+    // 시작일 (안내용)
     const dates = data.fieldworkLogs.map(l => l.date).filter(Boolean).sort();
     const startDate = data.startDate || (dates[0] || '');
-    let weeksElapsed = 0;
-    if (startDate) {
-      const start = parseLocalDate(startDate);
-      const now = new Date();
-      weeksElapsed = Math.max(1, Math.ceil((now - start) / (7 * 24 * 60 * 60 * 1000)));
+
+    // 최근 4주 페이스 (실제 데이터 있는 주 수로 나눔)
+    // 첫 회기가 4주 안에 있으면 그 기간만큼만, 아니면 4주 전체
+    let recentWeeks = 4;
+    if (dates.length > 0) {
+      const firstDate = parseLocalDate(dates[0]);
+      if (firstDate > fourWeeksAgo) {
+        recentWeeks = Math.max(1, Math.ceil((now - firstDate) / (7 * 24 * 60 * 60 * 1000)));
+      }
     }
-    const weeklyPace = weeksElapsed > 0 ? fwTotal / weeksElapsed : 0;
+    const weeklyPace = recentFw / recentWeeks;
     const remaining = Math.max(0, exam.total - fwTotal);
 
     let estCompletion = '-';
-    if (weeklyPace > 0 && startDate && remaining > 0) {
+    if (weeklyPace > 0 && remaining > 0) {
       const weeksRemaining = remaining / weeklyPace;
       if (weeksRemaining <= 520) {
         const target = new Date(Date.now() + weeksRemaining * 7 * 24 * 60 * 60 * 1000);
@@ -289,13 +290,14 @@ export default function App() {
       }
     } else if (remaining === 0) {
       estCompletion = '✅ 달성!';
+    } else if (recentFw === 0 && fwTotal > 0) {
+      estCompletion = '⏸ 최근 4주 기록 없음';
     }
 
-    const now = new Date();
     const thisYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
     // 월별 5% 미충족 분석 (지난달 까지만)
-    const monthsShort = monthlyData.filter(m => {
+    const monthsShort = monthlyArr.filter(m => {
       if (m.ym >= thisYM) return false; // 이번 달은 진행 중이라 제외
       if (m.fw === 0) return false; // 필드워크 없으면 슈퍼비전 의무도 없음
       const needed = m.fw * (exam.svPercent / 100);
@@ -311,7 +313,7 @@ export default function App() {
     return {
       fwTotal, directTotal, indirectTotal,
       svTotal, svRequired,
-      monthlyData, weeklyPace, remaining, estCompletion,
+      weeklyPace, remaining, estCompletion,
       monthsShort
     };
   }, [data, exam]);
@@ -368,16 +370,23 @@ export default function App() {
       </nav>
 
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+        {/* 슈퍼바이저 자동완성 목록 (메인 + 추가 + 과거 사용 이름) */}
         <datalist id="supervisor-list">
-          {data.mainSupervisor && <option value={data.mainSupervisor} />}
-          {(data.supervisors || []).map(s => <option key={s} value={s} />)}
+          {(() => {
+            const set = new Set();
+            if (data.mainSupervisor) set.add(data.mainSupervisor);
+            (data.supervisors || []).forEach(s => set.add(s));
+            data.fieldworkLogs.forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            data.supervisionLogs.forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            return Array.from(set).map(s => <option key={s} value={s} />);
+          })()}
         </datalist>
 
         {tab === 'dashboard' && <Dashboard data={data} stats={stats} exam={exam} update={update} />}
         {tab === 'fieldwork' && <FieldworkLog data={data} exam={exam} update={update} />}
         {tab === 'supervision' && <SupervisionLog data={data} update={update} />}
         {tab === 'analysis' && <BySupervisor data={data} />}
-        {tab === 'info' && <ExamInfoTab />}
+        {tab === 'info' && <ExamInfoTab currentExam={data.examType} />}
       </main>
 
       <footer style={{ background: C.pinkPale, padding: '28px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
@@ -411,11 +420,6 @@ function Toast({ msg, type }) {
     </div>
   );
 }
-
-const tooltipStyle = {
-  background: C.white, border: `1px solid ${C.pinkLight}`, borderRadius: 8,
-  fontSize: 13, boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-};
 
 // ============================================
 // 🎉 환영/시작 안내 카드
@@ -580,11 +584,11 @@ function Dashboard({ data, stats, exam, update }) {
           </div>
           {stats.fwTotal > 0 ? (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>⚡ 주당 평균</span>
-                <strong style={{ fontSize: 14, color: C.plumDark }}>{fmt(stats.weeklyPace)} hr</strong>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="최근 4주 동안의 주당 평균 필드워크 시간">
+                <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>⚡ 최근 페이스</span>
+                <strong style={{ fontSize: 14, color: C.plumDark }}>{fmt(stats.weeklyPace)} hr/주</strong>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="현재 페이스를 유지했을 때 목표 달성 예상일">
                 <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>🎯 예상 완료</span>
                 <strong style={{ fontSize: 14, color: C.plumDark }}>{stats.estCompletion}</strong>
               </div>
@@ -599,44 +603,6 @@ function Dashboard({ data, stats, exam, update }) {
             </span>
           )}
         </div>
-      </Section>
-
-      {/* 월별 추이 (통합) */}
-      <Section title="📈 월별 추이 (필드워크 · 슈퍼비전 · 5% 목표)">
-        {stats.monthlyData.length > 0 ? (
-          <>
-            <div style={{ height: 360 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={stats.monthlyData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.pinkLight} vertical={false} />
-                  <XAxis dataKey="ym" tick={{ fontSize: 12, fill: C.grayText }} axisLine={{ stroke: C.pinkLight }} tickLine={false} />
-                  <YAxis yAxisId="left" tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false}
-                         label={{ value: '월별 시간(hr)', angle: -90, position: 'insideLeft', style: { fill: C.grayText, fontSize: 11 } }} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12, fill: C.grayText }} axisLine={false} tickLine={false}
-                         label={{ value: '누적(hr)', angle: 90, position: 'insideRight', style: { fill: C.grayText, fontSize: 11 } }} />
-                  <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${fmt(v)} hr`, n]} />
-                  <Legend iconType="circle" wrapperStyle={{ fontSize: 13, paddingTop: 8 }} />
-                  {/* 필드워크 (Direct + Indirect 스택) */}
-                  <Bar yAxisId="left" dataKey="Direct" stackId="fw" fill={C.goldDeep} barSize={22} />
-                  <Bar yAxisId="left" dataKey="Indirect" stackId="fw" fill={C.goodGreen} radius={[4, 4, 0, 0]} barSize={22} />
-                  {/* 실제 받은 슈퍼비전 */}
-                  <Bar yAxisId="left" dataKey="슈퍼비전" fill={C.plumDark} radius={[4, 4, 0, 0]} barSize={14} />
-                  {/* 5% 목표선 (점선) */}
-                  <Line yAxisId="left" type="monotone" dataKey="필요슈퍼비전" name="5% 필요 슈퍼비전" stroke={C.warnYellow} strokeWidth={2} strokeDasharray="5 5" dot={{ fill: C.warnYellow, r: 3 }} />
-                  {/* 누적 필드워크 (오른쪽 축) */}
-                  <Line yAxisId="right" type="monotone" dataKey="누적" name="누적 필드워크" stroke={C.pinkDeep} strokeWidth={2.5} dot={{ fill: C.pinkDeep, r: 4 }} activeDot={{ r: 6 }} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={{ marginTop: 12, padding: 12, background: C.pinkPale, borderRadius: 8, fontSize: 11, color: C.grayText, lineHeight: 1.7 }}>
-              💡 <strong style={{ color: C.plumDark }}>차트 보는 법</strong><br/>
-              • <span style={{ color: C.goldDeep, fontWeight: 600 }}>■ Direct</span> + <span style={{ color: C.goodGreen, fontWeight: 600 }}>■ Indirect</span> = 그 달 필드워크<br/>
-              • <span style={{ color: C.plumDark, fontWeight: 600 }}>■ 슈퍼비전</span> = 그 달 받은 슈퍼비전 시간<br/>
-              • <span style={{ color: C.warnYellow, fontWeight: 600 }}>┄ 노란 점선</span> = 5% 필요 슈퍼비전 (이 선보다 슈퍼비전 막대가 높아야 충족)<br/>
-              • <span style={{ color: C.pinkDeep, fontWeight: 600 }}>― 분홍 선</span> = 누적 필드워크 (오른쪽 축)
-            </div>
-          </>
-        ) : <EmptyChart msg="월별 데이터가 없습니다. 필드워크 입력 후 표시됩니다." />}
       </Section>
     </div>
   );
@@ -659,13 +625,16 @@ function BigProgressBar({ icon, label, sublabel, current, target, color, bgColor
     if (target === 0) {
       statusText = '아직 없음';
       statusColor = C.grayText;
-    } else if (Math.abs(diff) < 0.5) {
-      statusText = '✓ 적정';
-      statusColor = C.goodGreen;
-    } else if (diff < 0) {
+    } else if (diff < -0.1) {
+      // 부족
       statusText = `${fmt(-diff)}hr 부족 ⚠`;
       statusColor = C.warnYellow;
+    } else if (diff >= -0.1 && diff <= 0.1) {
+      // 정확히 5% (오차 0.1hr=6분 이내)
+      statusText = '✓ 적정';
+      statusColor = C.goodGreen;
     } else {
+      // 여유 (5% 초과 달성)
       statusText = `+${fmt(diff)}hr 여유 ✓`;
       statusColor = C.goodGreen;
     }
@@ -885,11 +854,41 @@ const Section = ({ title, children }) => (
   </section>
 );
 
-const EmptyChart = ({ msg }) => (
-  <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.grayText, background: C.pinkPale, borderRadius: 8, fontSize: 13 }}>
-    {msg}
-  </div>
-);
+// 접을 수 있는 섹션 (defaultOpen 기본 false)
+function CollapsibleSection({ title, children, defaultOpen = false, badge }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section style={{ background: C.white, borderRadius: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', padding: '18px 24px', background: 'none', border: 'none',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left'
+        }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.plumDark, letterSpacing: '-0.01em' }}>{title}</h2>
+          {badge && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+              background: C.pinkDeep, color: C.white, letterSpacing: '0.05em'
+            }}>{badge}</span>
+          )}
+        </div>
+        <span style={{
+          fontSize: 14, color: C.grayText,
+          transform: open ? 'rotate(180deg)' : 'none',
+          transition: 'transform 0.2s'
+        }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: '0 24px 24px 24px' }}>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const inputStyle = {
   padding: '9px 12px', fontSize: 14, border: `1px solid #E0D5D8`, borderRadius: 6,
@@ -902,7 +901,19 @@ const inputStyle = {
 function FieldworkLog({ data, exam, update }) {
   const [sortBy, setSortBy] = useState('desc');
   const [recentlyAddedId, setRecentlyAddedId] = useState(null);
+  const [quickMode, setQuickMode] = useState(false);
 
+  // 이전 활동·시간·슈퍼바이저 기억 (가장 최근 회기 기준)
+  const lastLog = useMemo(() => {
+    if (data.fieldworkLogs.length === 0) return null;
+    return [...data.fieldworkLogs].sort((a, b) => {
+      const d = (a.date || '').localeCompare(b.date || '');
+      if (d !== 0) return -d;
+      return (b.id || 0) - (a.id || 0);
+    })[0];
+  }, [data.fieldworkLogs]);
+
+  // 빈 회기 추가 (펼친 상태로)
   const add = () => {
     const id = Date.now();
     const newLog = {
@@ -918,6 +929,44 @@ function FieldworkLog({ data, exam, update }) {
     update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
     setRecentlyAddedId(id);
   };
+
+  // 이전 회기 복사 (날짜는 다음 날, 나머지는 그대로)
+  const copyLast = () => {
+    if (!lastLog) return;
+    const id = Date.now();
+    // 날짜 +1
+    let nextDate = todayYMD();
+    if (lastLog.date) {
+      const d = parseLocalDate(lastLog.date);
+      d.setDate(d.getDate() + 1);
+      nextDate = dateToYMD(d);
+    }
+    const newLog = {
+      ...lastLog,
+      id,
+      date: nextDate
+    };
+    update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
+    setRecentlyAddedId(id);
+  };
+
+  // 빠른 입력 - 한 줄로 추가
+  const quickAdd = (quickLog) => {
+    const id = Date.now();
+    const newLog = {
+      id,
+      supervisor: quickLog.supervisor || data.mainSupervisor || '',
+      date: quickLog.date || todayYMD(),
+      startTime: quickLog.startTime || '',
+      endTime: quickLog.endTime || '',
+      direct: quickLog.direct || '',
+      activities: lastLog?.activities ? [...lastLog.activities] : [],
+      customActivities: []
+    };
+    update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
+    setRecentlyAddedId(id);
+  };
+
   const upd = (id, c) => update({ fieldworkLogs: data.fieldworkLogs.map(l => l.id === id ? { ...l, ...c } : l) });
   const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ fieldworkLogs: data.fieldworkLogs.filter(l => l.id !== id) }); };
 
@@ -931,29 +980,165 @@ function FieldworkLog({ data, exam, update }) {
   return (
     <div>
       <InfoBanner>
-        💡 <strong>회기 기록 방법</strong>: 시작 시간을 선택한 뒤 <strong>30분/1시간/2시간 같은 지속 시간 버튼</strong>을 누르면 종료 시간이 자동 계산됩니다.<br/>
+        💡 <strong>회기 기록 방법</strong>: 시작 시간을 선택한 뒤 종료 시간을 선택하거나 <strong>빠른 버튼(+30분/+1시간 등)</strong>을 누르세요.<br/>
         <strong>Direct (직접)</strong> 시간을 입력하면 나머지는 <strong>Indirect (간접)</strong>로 자동 분류됩니다.
       </InfoBanner>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>📋 필드워크 기록</h2>
           <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>총 {data.fieldworkLogs.length}건</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select value={sortBy} onChange={e => setSortBy(e.target.value)}
                   style={{ padding: '8px 12px', fontSize: 13, border: `1px solid ${C.pinkLight}`, borderRadius: 6, background: C.white, color: C.plumDark, cursor: 'pointer' }}>
             <option value="desc">최신순 ↓</option>
             <option value="asc">오래된순 ↑</option>
           </select>
+          {lastLog && (
+            <button onClick={copyLast} title="가장 최근 회기와 똑같이 복사 (날짜는 +1일)"
+                    style={{ padding: '10px 14px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkPale, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer' }}>
+              📋 지난 회기 복사
+            </button>
+          )}
           <button onClick={add} style={addBtnStyle}>+ 새 회기</button>
         </div>
       </div>
+
+      {/* 빠른 입력 토글 */}
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setQuickMode(!quickMode)}
+                style={{
+                  padding: '8px 14px', fontSize: 13, fontWeight: 500,
+                  background: quickMode ? C.pinkDeep : C.pinkSoft,
+                  color: quickMode ? C.white : C.plumDark,
+                  border: `1px solid ${C.pinkLight}`, borderRadius: 6, cursor: 'pointer'
+                }}>
+          ⚡ 빠른 입력 {quickMode ? 'ON' : 'OFF'}
+        </button>
+        <span style={{ marginLeft: 10, fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
+          한 줄로 빠르게 입력 (상세 편집은 카드 펼침)
+        </span>
+      </div>
+
+      {quickMode && <QuickAddRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
+
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 회기가 없습니다.' sub='"새 회기" 버튼을 눌러 시작하세요.' /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {sortedLogs.map(log => <FieldworkItem key={log.id} log={log} exam={exam} onUpdate={c => upd(log.id, c)} onDelete={() => del(log.id)} defaultExpanded={log.id === recentlyAddedId} />)}
         </div>
       )}
+    </div>
+  );
+}
+
+// QuickAddRow - 한 줄 빠른 입력
+function QuickAddRow({ onAdd, mainSupervisor }) {
+  const [date, setDate] = useState(todayYMD());
+  const [supervisor, setSupervisor] = useState(mainSupervisor || '');
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [direct, setDirect] = useState('');
+
+  const totalHours = timeToHours(startTime, endTime);
+
+  const timeOptions = useMemo(() => {
+    const opts = [];
+    for (let h = 6; h <= 22; h++) {
+      for (let m = 0; m < 60; m += 30) {
+        opts.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      }
+    }
+    return opts;
+  }, []);
+
+  const renderOption = (t) => {
+    const [h, m] = t.split(':').map(Number);
+    const period = h < 12 ? '오전' : '오후';
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
+  };
+
+  const handleSubmit = () => {
+    if (!startTime || !endTime) {
+      window.alert('시작/종료 시간을 선택하세요');
+      return;
+    }
+    if (totalHours <= 0) {
+      window.alert('종료 시간이 시작 시간보다 늦어야 합니다');
+      return;
+    }
+    onAdd({ date, supervisor, startTime, endTime, direct });
+    // 초기화 (날짜·슈퍼바이저는 유지 - 같은 날 여러 회기 빠르게)
+    setStartTime('');
+    setEndTime('');
+    setDirect('');
+  };
+
+  return (
+    <div style={{
+      background: C.pinkPale, border: `1px dashed ${C.pinkLight}`, borderRadius: 10,
+      padding: 14, marginBottom: 16
+    }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ minWidth: 140 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>📅 날짜</div>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+                 style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12 }} />
+        </div>
+        <div style={{ minWidth: 100 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>🎓 슈퍼바이저</div>
+          <input type="text" value={supervisor} onChange={e => setSupervisor(e.target.value)}
+                 list="supervisor-list"
+                 placeholder="이름"
+                 style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12 }} />
+        </div>
+        <div style={{ minWidth: 100 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>⏰ 시작</div>
+          <select value={startTime} onChange={e => setStartTime(e.target.value)}
+                  style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12, cursor: 'pointer' }}>
+            <option value="">선택</option>
+            {timeOptions.map(t => <option key={t} value={t}>{renderOption(t)}</option>)}
+          </select>
+        </div>
+        <div style={{ minWidth: 100 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>⏰ 종료</div>
+          <select value={endTime} onChange={e => setEndTime(e.target.value)}
+                  disabled={!startTime}
+                  style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12, cursor: startTime ? 'pointer' : 'not-allowed',
+                           ...(!startTime && { background: '#F5F5F5', color: C.grayText }) }}>
+            <option value="">선택</option>
+            {timeOptions.filter(t => !startTime || t > startTime).map(t => <option key={t} value={t}>{renderOption(t)}</option>)}
+          </select>
+        </div>
+        <div style={{ minWidth: 80 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>📍 Direct</div>
+          <input type="number" step="0.25" min="0" max={totalHours || undefined}
+                 value={direct} onChange={e => setDirect(e.target.value)}
+                 disabled={totalHours === 0}
+                 placeholder={totalHours === 0 ? '-' : 'hr'}
+                 style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12, width: 70,
+                          ...(totalHours === 0 && { background: '#F5F5F5', color: C.grayText }) }} />
+        </div>
+        {totalHours > 0 && (
+          <div style={{
+            background: C.white, padding: '6px 10px', borderRadius: 6, fontSize: 12, fontWeight: 700, color: C.pinkDeep
+          }}>
+            {fmt(totalHours)}hr
+          </div>
+        )}
+        <button onClick={handleSubmit}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 600,
+                  background: C.pinkDeep, color: C.white, border: 'none', borderRadius: 6,
+                  cursor: 'pointer', whiteSpace: 'nowrap'
+                }}>
+          + 추가
+        </button>
+      </div>
+      <p style={{ margin: '8px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
+        💡 추가하면 날짜·슈퍼바이저는 유지되고, 시간만 비워집니다 (같은 날 여러 회기 빠르게 추가)
+      </p>
     </div>
   );
 }
@@ -964,10 +1149,10 @@ const InfoBanner = ({ children }) => (
   </div>
 );
 
-// TimeRangePicker - 시작 시간 + 지속 시간으로 입력
+// TimeRangePicker - 시작 시간 + 종료 시간 (빠른 버튼 보조)
 function TimeRangePicker({ startTime, endTime, onChange }) {
-  // 시작 시간 옵션 (오전 6시 ~ 밤 10시 30분, 30분 단위)
-  const startOptions = useMemo(() => {
+  // 시간 옵션 (오전 6시 ~ 밤 10시 30분, 30분 단위)
+  const timeOptions = useMemo(() => {
     const opts = [];
     for (let h = 6; h <= 22; h++) {
       for (let m = 0; m < 60; m += 30) {
@@ -982,7 +1167,7 @@ function TimeRangePicker({ startTime, endTime, onChange }) {
   // 현재 지속 시간 계산
   const currentDuration = timeToHours(startTime, endTime);
 
-  // 종료 시간 계산 함수
+  // 시작 시간 + 지속시간 → 종료 시간
   const calcEndTime = (start, durationHours) => {
     if (!start || !durationHours) return '';
     const [sh, sm] = start.split(':').map(Number);
@@ -993,17 +1178,8 @@ function TimeRangePicker({ startTime, endTime, onChange }) {
     return `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
   };
 
-  const handleStartChange = (newStart) => {
-    if (currentDuration > 0) {
-      // 지속 시간 유지하면서 종료 시간 자동 계산
-      const newEnd = calcEndTime(newStart, currentDuration);
-      onChange({ startTime: newStart, endTime: newEnd });
-    } else {
-      onChange({ startTime: newStart });
-    }
-  };
-
-  const handleDurationClick = (hours) => {
+  // 빠른 버튼으로 종료 시간 자동 채우기
+  const handleQuickEnd = (hours) => {
     if (!startTime) {
       window.alert('먼저 시작 시간을 선택하세요');
       return;
@@ -1016,98 +1192,81 @@ function TimeRangePicker({ startTime, endTime, onChange }) {
     onChange({ endTime: newEnd });
   };
 
-  const presets = [
-    { label: '30분', value: 0.5 },
-    { label: '1시간', value: 1 },
-    { label: '1.5시간', value: 1.5 },
-    { label: '2시간', value: 2 },
-    { label: '3시간', value: 3 },
-    { label: '4시간', value: 4 },
-    { label: '6시간', value: 6 },
-    { label: '8시간', value: 8 }
+  const quickButtons = [
+    { label: '+30분', value: 0.5 },
+    { label: '+1시간', value: 1 },
+    { label: '+2시간', value: 2 },
+    { label: '+3시간', value: 3 },
+    { label: '+4시간', value: 4 }
   ];
+
+  // 한글 시간 표시 함수
+  const formatKr = (t) => {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    const period = h < 12 ? '오전' : '오후';
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
+  };
+
+  const renderOption = (t) => {
+    const [h, m] = t.split(':').map(Number);
+    const period = h < 12 ? '오전' : '오후';
+    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
+  };
 
   return (
     <div style={{ marginBottom: 12 }}>
-      {/* 시작 시간 */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
-          ⏰ 시작 시간
+      {/* 시작 + 종료 시간 한 줄 */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 }}>
+        <div style={{ flex: '1 1 140px' }}>
+          <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 6 }}>⏰ 시작</div>
+          <select value={startTime || ''} onChange={e => onChange({ startTime: e.target.value })}
+                  style={{ ...logInputStyle, fontSize: 14, padding: '10px 12px', cursor: 'pointer', width: '100%' }}>
+            <option value="">선택</option>
+            {timeOptions.map(t => <option key={t} value={t}>{renderOption(t)}</option>)}
+          </select>
         </div>
-        <select value={startTime || ''} onChange={e => handleStartChange(e.target.value)}
-                style={{ ...logInputStyle, fontSize: 15, padding: '10px 12px', minWidth: 140, cursor: 'pointer' }}>
-          <option value="">-- 시작 시간 선택 --</option>
-          {startOptions.map(t => {
-            const [h, m] = t.split(':').map(Number);
-            const period = h < 12 ? '오전' : '오후';
-            const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
-            const label = `${period} ${displayH}:${String(m).padStart(2, '0')}`;
-            return <option key={t} value={t}>{label}</option>;
-          })}
-        </select>
-      </div>
-
-      {/* 지속 시간 */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
-          ⏱ 지속 시간 (몇 시간 했나요?)
+        <span style={{ fontSize: 16, color: C.grayText, paddingBottom: 10 }}>~</span>
+        <div style={{ flex: '1 1 140px' }}>
+          <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 6 }}>⏰ 종료</div>
+          <select value={endTime || ''} onChange={e => onChange({ endTime: e.target.value })}
+                  disabled={!startTime}
+                  style={{ ...logInputStyle, fontSize: 14, padding: '10px 12px', cursor: startTime ? 'pointer' : 'not-allowed', width: '100%',
+                           ...(!startTime && { background: '#F5F5F5', color: C.grayText }) }}>
+            <option value="">{startTime ? '선택' : '먼저 시작 시간 선택'}</option>
+            {timeOptions.filter(t => !startTime || t > startTime).map(t => <option key={t} value={t}>{renderOption(t)}</option>)}
+          </select>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-          {presets.map(p => {
-            const isSelected = Math.abs(currentDuration - p.value) < 0.01;
-            return (
-              <button
-                key={p.value}
-                onClick={() => handleDurationClick(p.value)}
-                style={{
-                  padding: '8px 14px', fontSize: 13, fontWeight: 600,
-                  border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
-                  borderRadius: 8,
-                  background: isSelected ? C.pinkDeep : C.white,
-                  color: isSelected ? C.white : C.grayText,
-                  cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
-                }}>
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12, color: C.grayText }}>또는 직접 입력:</span>
-          <input
-            type="number" step="0.5" min="0" max="24"
-            value={currentDuration > 0 && !presets.some(p => Math.abs(p.value - currentDuration) < 0.01) ? currentDuration : ''}
-            onChange={e => {
-              const v = parseFloat(e.target.value);
-              if (!isNaN(v) && v > 0) handleDurationClick(v);
-              else if (e.target.value === '') onChange({ endTime: '' });
-            }}
-            placeholder="시간"
-            style={{ ...logInputStyle, width: 100, padding: '7px 10px' }}
-          />
-          <span style={{ fontSize: 12, color: C.grayText }}>hr</span>
-        </div>
-      </div>
-
-      {/* 결과 표시 */}
-      {startTime && endTime && currentDuration > 0 && (() => {
-        const formatKr = (t) => {
-          const [h, m] = t.split(':').map(Number);
-          const period = h < 12 ? '오전' : '오후';
-          const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
-          return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
-        };
-        return (
-          <div style={{ padding: '10px 14px', background: C.pinkPale, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, color: C.plumDark }}>
-              <strong>{formatKr(startTime)}</strong> ~ <strong>{formatKr(endTime)}</strong>
-            </span>
-            <span style={{ fontSize: 14, fontWeight: 700, color: C.pinkDeep }}>
-              = {fmt(currentDuration)} hr
-            </span>
+        {currentDuration > 0 && (
+          <div style={{ background: C.pinkPale, padding: '10px 16px', borderRadius: 8, fontSize: 14, fontWeight: 700, color: C.pinkDeep, whiteSpace: 'nowrap' }}>
+            = {fmt(currentDuration)} hr
           </div>
-        );
-      })()}
+        )}
+      </div>
+
+      {/* 빠른 종료 버튼 (시작 선택 후 보조) */}
+      {startTime && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, color: C.grayText }}>⚡ 빠르게:</span>
+          {quickButtons.map(b => (
+            <button
+              key={b.value}
+              onClick={() => handleQuickEnd(b.value)}
+              style={{
+                padding: '4px 10px', fontSize: 12, fontWeight: 500,
+                border: `1px solid #E0D5D8`,
+                borderRadius: 6,
+                background: C.white,
+                color: C.plumDark,
+                cursor: 'pointer', fontFamily: 'inherit'
+              }}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1346,6 +1505,17 @@ function CustomActivityInput({ customActivities, onChange }) {
 function SupervisionLog({ data, update }) {
   const [sortBy, setSortBy] = useState('desc');
   const [recentlyAddedId, setRecentlyAddedId] = useState(null);
+  const [quickMode, setQuickMode] = useState(false);
+
+  // 이전 슈퍼비전 기억
+  const lastLog = useMemo(() => {
+    if (data.supervisionLogs.length === 0) return null;
+    return [...data.supervisionLogs].sort((a, b) => {
+      const d = (a.date || '').localeCompare(b.date || '');
+      if (d !== 0) return -d;
+      return (b.id || 0) - (a.id || 0);
+    })[0];
+  }, [data.supervisionLogs]);
 
   const add = () => {
     const id = Date.now();
@@ -1353,6 +1523,40 @@ function SupervisionLog({ data, update }) {
     update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
     setRecentlyAddedId(id);
   };
+
+  // 이전 슈퍼비전 복사 (날짜 +7일 - 주1회가 일반적)
+  const copyLast = () => {
+    if (!lastLog) return;
+    const id = Date.now();
+    let nextDate = todayYMD();
+    if (lastLog.date) {
+      const d = parseLocalDate(lastLog.date);
+      d.setDate(d.getDate() + 7);
+      nextDate = dateToYMD(d);
+    }
+    const newLog = {
+      ...lastLog,
+      id,
+      date: nextDate,
+      notes: '' // 메모는 비움 (회기마다 다름)
+    };
+    update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
+    setRecentlyAddedId(id);
+  };
+
+  const quickAdd = (quickLog) => {
+    const id = Date.now();
+    const newLog = {
+      id,
+      date: quickLog.date || todayYMD(),
+      hours: quickLog.hours || '',
+      supervisor: quickLog.supervisor || data.mainSupervisor || '',
+      notes: ''
+    };
+    update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
+    setRecentlyAddedId(id);
+  };
+
   const upd = (id, c) => update({ supervisionLogs: data.supervisionLogs.map(l => l.id === id ? { ...l, ...c } : l) });
   const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ supervisionLogs: data.supervisionLogs.filter(l => l.id !== id) }); };
 
@@ -1370,20 +1574,45 @@ function SupervisionLog({ data, update }) {
         QABA 공식 규정상 <strong>매월 필드워크 시간의 5%</strong>를 슈퍼비전 받아야 합니다.
       </InfoBanner>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>🎓 슈퍼비전 기록</h2>
           <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>총 {data.supervisionLogs.length}건</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select value={sortBy} onChange={e => setSortBy(e.target.value)}
                   style={{ padding: '8px 12px', fontSize: 13, border: `1px solid ${C.pinkLight}`, borderRadius: 6, background: C.white, color: C.plumDark, cursor: 'pointer' }}>
             <option value="desc">최신순 ↓</option>
             <option value="asc">오래된순 ↑</option>
           </select>
+          {lastLog && (
+            <button onClick={copyLast} title="가장 최근 슈퍼비전과 똑같이 복사 (날짜는 +7일, 메모는 빈 값)"
+                    style={{ padding: '10px 14px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkPale, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer' }}>
+              📋 지난 슈퍼비전 복사
+            </button>
+          )}
           <button onClick={add} style={addBtnStyle}>+ 새 슈퍼비전</button>
         </div>
       </div>
+
+      {/* 빠른 입력 토글 */}
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setQuickMode(!quickMode)}
+                style={{
+                  padding: '8px 14px', fontSize: 13, fontWeight: 500,
+                  background: quickMode ? C.pinkDeep : C.pinkSoft,
+                  color: quickMode ? C.white : C.plumDark,
+                  border: `1px solid ${C.pinkLight}`, borderRadius: 6, cursor: 'pointer'
+                }}>
+          ⚡ 빠른 입력 {quickMode ? 'ON' : 'OFF'}
+        </button>
+        <span style={{ marginLeft: 10, fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
+          한 줄로 빠르게 입력 (메모는 카드 펼쳐서 추가)
+        </span>
+      </div>
+
+      {quickMode && <QuickAddSvRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
+
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 슈퍼비전이 없습니다.' sub='"새 슈퍼비전" 버튼을 눌러 시작하세요.' /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {sortedLogs.map(log => (
@@ -1397,6 +1626,80 @@ function SupervisionLog({ data, update }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// QuickAddSvRow - 슈퍼비전 한 줄 빠른 입력
+function QuickAddSvRow({ onAdd, mainSupervisor }) {
+  const [date, setDate] = useState(todayYMD());
+  const [supervisor, setSupervisor] = useState(mainSupervisor || '');
+  const [hours, setHours] = useState('');
+
+  const presets = [0.5, 1, 1.5, 2, 3];
+
+  const handleSubmit = () => {
+    const h = Number(hours);
+    if (!h || h <= 0) {
+      window.alert('시간을 입력하세요');
+      return;
+    }
+    onAdd({ date, supervisor, hours: h });
+    setHours(''); // 날짜·슈퍼바이저 유지
+  };
+
+  return (
+    <div style={{
+      background: C.pinkPale, border: `1px dashed ${C.pinkLight}`, borderRadius: 10,
+      padding: 14, marginBottom: 16
+    }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ minWidth: 140 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>📅 날짜</div>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+                 style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12 }} />
+        </div>
+        <div style={{ minWidth: 120 }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>🎓 슈퍼바이저</div>
+          <input type="text" value={supervisor} onChange={e => setSupervisor(e.target.value)}
+                 list="supervisor-list"
+                 placeholder="이름"
+                 style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12 }} />
+        </div>
+        <div style={{ flex: '1 1 200px' }}>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>⏱ 시간 (hr)</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {presets.map(p => (
+              <button key={p} onClick={() => setHours(String(p))}
+                style={{
+                  padding: '5px 10px', fontSize: 11, fontWeight: 600,
+                  border: `1px solid ${Number(hours) === p ? C.plumDark : '#E0D5D8'}`,
+                  borderRadius: 5,
+                  background: Number(hours) === p ? C.plumDark : C.white,
+                  color: Number(hours) === p ? C.white : C.grayText,
+                  cursor: 'pointer', fontFamily: 'inherit'
+                }}>
+                {p}
+              </button>
+            ))}
+            <input type="number" step="0.25" min="0"
+                   value={hours} onChange={e => setHours(e.target.value)}
+                   placeholder="직접"
+                   style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12, width: 70 }} />
+          </div>
+        </div>
+        <button onClick={handleSubmit}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 600,
+                  background: C.pinkDeep, color: C.white, border: 'none', borderRadius: 6,
+                  cursor: 'pointer', whiteSpace: 'nowrap'
+                }}>
+          + 추가
+        </button>
+      </div>
+      <p style={{ margin: '8px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
+        💡 추가하면 날짜·슈퍼바이저는 유지되고, 시간만 비워집니다
+      </p>
     </div>
   );
 }
@@ -1703,9 +2006,9 @@ function SupervisorCard({ rank, supervisor: s, maxTotal, allTotal, showRank }) {
 // ============================================
 // 📚 EXAM INFO TAB (정확한 공식 규정)
 // ============================================
-function ExamInfoTab() {
+function ExamInfoTab({ currentExam }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
         <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>📚 시험 정보</h2>
         <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>QABA(Qualified Applied Behavior Analysis Credentialing Board) 자격 안내</p>
@@ -1715,8 +2018,8 @@ function ExamInfoTab() {
         ⚠️ <strong>본 정보는 참고용입니다.</strong> 정확한 최신 요건은 반드시 QABA 공식 사이트에서 확인하세요. 시험 요건은 변경될 수 있습니다.
       </InfoBanner>
 
-      {/* 자격 준비 단계 */}
-      <Section title="🗺️ 자격 준비 단계 한눈에 보기">
+      {/* 자격 준비 단계 (접힘) */}
+      <CollapsibleSection title="🗺️ 자격 준비 단계 한눈에 보기 (7단계)">
         <div style={{ display: 'grid', gap: 12 }}>
           <PrepStep num="1" title="자격 선택" desc="본인 학력에 맞는 자격 선택 (석사 이상 → QBA, 학사 → QASP-S)" />
           <PrepStep num="2" title="코스워크 이수" desc="QABA 승인 교육기관에서 코스워크 수강 (QBA 270시간 · QASP-S 188시간)" />
@@ -1726,9 +2029,14 @@ function ExamInfoTab() {
           <PrepStep num="6" title="시험 응시" desc="QABA 공식 사이트에서 응시료 결제 후 시험 신청 (QBA $350 · QASP-S $300)" />
           <PrepStep num="7" title="자격 유지" desc="2년마다 CEU 이수 (QBA 32개 · QASP-S 20개) + 윤리 강령 동의 + 갱신 신청" />
         </div>
-      </Section>
+      </CollapsibleSection>
 
-      <Section title="🎓 QBA (Qualified Behavior Analyst)">
+      {/* QBA - 자기 시험이면 자동 펼침 */}
+      <CollapsibleSection
+        title="🎓 QBA (Qualified Behavior Analyst)"
+        defaultOpen={currentExam === 'QBA'}
+        badge={currentExam === 'QBA' ? '내 시험' : null}
+      >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <SimpleInfoRow label="대상" value="마스터급 행동분석가" />
           <SimpleInfoRow label="학력" value="석사 학위 이상 (관련 분야)" />
@@ -1748,9 +2056,14 @@ function ExamInfoTab() {
         <div style={{ marginTop: 12, padding: 10, background: '#FFF8E7', borderRadius: 6, fontSize: 11, color: '#7A5538', lineHeight: 1.6 }}>
           💡 <strong>경과조치</strong>: 2026년 1월 1일 이전 시작자는 1,500시간으로 인정. 단 시작일로부터 3년 내(2029년 1월 1일까지) 완료 필요.
         </div>
-      </Section>
+      </CollapsibleSection>
 
-      <Section title="🎓 QASP-S (Qualified Autism Service Practitioner - Supervisor)">
+      {/* QASP-S - 자기 시험이면 자동 펼침 */}
+      <CollapsibleSection
+        title="🎓 QASP-S (Qualified Autism Service Practitioner - Supervisor)"
+        defaultOpen={currentExam === 'QASP-S'}
+        badge={currentExam === 'QASP-S' ? '내 시험' : null}
+      >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <SimpleInfoRow label="대상" value="중간급 자폐 서비스 실무자 및 슈퍼바이저" />
           <SimpleInfoRow label="나이" value="만 18세 이상" />
@@ -1769,10 +2082,10 @@ function ExamInfoTab() {
           <SimpleInfoRow label="재시험" value="30일 후 가능, 1년 4회 제한" />
           <SimpleInfoRow label="갱신" value="2년마다 20 CEU" />
         </div>
-      </Section>
+      </CollapsibleSection>
 
-      {/* FAQ */}
-      <Section title="❓ 자주 묻는 질문">
+      {/* FAQ (접힘) */}
+      <CollapsibleSection title="❓ 자주 묻는 질문 (FAQ)">
         <FAQItem
           q="필드워크 시간을 슈퍼바이저에게 어떻게 보고하나요?"
           a="이 시스템의 '슈퍼바이저별' 탭에서 누적 시간을 확인하고, 필요시 백업(JSON)을 전달하세요. 슈퍼바이저는 QABA 온라인 시스템에서 본인이 직접 인증해야 합니다."
@@ -1787,13 +2100,13 @@ function ExamInfoTab() {
         />
         <FAQItem
           q="슈퍼바이저는 누구에게 받을 수 있나요?"
-          a="자격에 따라 다릅니다.
+          a={`자격에 따라 다릅니다.
 
 [QBA 추구 시] QBA 자격을 최소 1년 이상 보유한 사람, 또는 다른 공인 인증기관에서 1년 이상 자격을 받은 행동분석가, LBA(Licensed Behavior Analyst), ABA 영역의 자격을 가진 LP(Licensed Psychologist)에게 받아야 합니다.
 
 [QASP-S 추구 시] QBA 자격자(시험 통과 즉시 슈퍼비전 가능), 또는 석사급 이상의 ABA 라이센스/자격 보유자에게 받을 수 있습니다.
 
-슈퍼바이저는 자격이 유효한 상태(만료되지 않음)여야 하며, 본인 자격증 보드의 윤리 강령을 준수해야 합니다."
+슈퍼바이저는 자격이 유효한 상태(만료되지 않음)여야 하며, 본인 자격증 보드의 윤리 강령을 준수해야 합니다.`}
         />
         <FAQItem
           q="이 시스템에 입력한 데이터가 공식 인증에 그대로 쓰이나요?"
@@ -1807,7 +2120,7 @@ function ExamInfoTab() {
           q="데이터가 사라지면 어떻게 하나요?"
           a="이 시스템은 브라우저에 데이터를 저장합니다. 정기적으로 상단 '💾 백업' 버튼을 눌러 JSON 파일을 보관하세요. 다른 기기 사용 시 '📂 복원'으로 불러올 수 있습니다."
         />
-      </Section>
+      </CollapsibleSection>
 
       <Section title="🏢 검단ABA언어행동연구소">
         <div style={{ padding: 20, background: 'linear-gradient(135deg, #FDF7F9 0%, #FAD5DA 100%)', borderRadius: 12 }}>
@@ -2016,7 +2329,15 @@ function GuideModal({ onClose }) {
           <h3 style={{ color: C.plumDark }}>📊 대시보드 보는 법</h3>
           <ul>
             <li><strong>한눈에 보기</strong>: 큰 진행률 바 2개 (필드워크·슈퍼비전)</li>
-            <li><strong>월별 추이 차트</strong>: 막대(필드워크·슈퍼비전), 노란 점선(5% 목표), 분홍 선(누적 필드워크)</li>
+            <li><strong>월별 5% 미충족 알림</strong>: 지난 달 슈퍼비전이 부족하면 자동 표시</li>
+            <li><strong>최근 페이스</strong>: 최근 4주 데이터로 예상 완료일 계산</li>
+          </ul>
+
+          <h3 style={{ color: C.plumDark }}>⚡ 빠르게 입력하기</h3>
+          <ul>
+            <li><strong>⚡ 빠른 입력 모드</strong>: 필드워크·슈퍼비전 탭에서 한 줄로 빠르게 추가</li>
+            <li><strong>📋 지난 회기/슈퍼비전 복사</strong>: 최근 기록과 똑같이 복사 (날짜만 변경)</li>
+            <li><strong>슈퍼바이저 자동완성</strong>: 한 번 입력한 이름은 자동 제시</li>
           </ul>
 
           <h3 style={{ color: C.plumDark }}>💾 데이터 백업·복원</h3>
