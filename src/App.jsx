@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import * as XLSX from 'xlsx';
 
 // ============================================
 // QABA 공식 규정 기준 데이터
@@ -181,6 +182,222 @@ export default function App() {
     showToast('백업 파일이 다운로드되었습니다', 'good');
   };
 
+  // 엑셀 보고서 내보내기 (QABA 제출용)
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const examTotal = exam.total;
+    const examDirectMax = exam.directMax;
+    const examIndirectMin = exam.indirectMin;
+    const svRequired = stats.svRequired;
+    const supervisee = data.superviseeName || '(미입력)';
+    const mainSv = data.mainSupervisor || '(미입력)';
+    const today = todayYMD();
+
+    // ============ Sheet 1: Fieldwork Log ============
+    const fwSheet = [];
+    fwSheet.push(['검단ABA 자격시간 트래커 - FIELDWORK LOG (필드워크 기록지)']);
+    fwSheet.push([]);
+    fwSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
+    fwSheet.push(['시험 유형', data.examType, '', '보고서 작성일', today]);
+    fwSheet.push([]);
+
+    // 누적 요약
+    fwSheet.push(['📊 누적 요약', '현재', '목표', '달성률']);
+    fwSheet.push([
+      'Total Fieldwork',
+      Math.round(stats.fwTotal * 10) / 10,
+      examTotal,
+      examTotal > 0 ? `${((stats.fwTotal / examTotal) * 100).toFixed(1)}%` : '-'
+    ]);
+    fwSheet.push([
+      'Direct (직접)',
+      Math.round(stats.directTotal * 10) / 10,
+      `최대 ${examDirectMax}`,
+      examDirectMax > 0 ? `${((stats.directTotal / examDirectMax) * 100).toFixed(1)}%` : '-'
+    ]);
+    fwSheet.push([
+      'Indirect (간접)',
+      Math.round(stats.indirectTotal * 10) / 10,
+      `최소 ${examIndirectMin}`,
+      examIndirectMin > 0 ? `${((stats.indirectTotal / examIndirectMin) * 100).toFixed(1)}%` : '-'
+    ]);
+    fwSheet.push([]);
+    fwSheet.push(['ℹ️ QABA 규정 안내: 월 최소 20시간 ~ 최대 140시간 인정 · 매월 슈퍼비전 5% 필수']);
+    fwSheet.push([]);
+
+    // 로그 테이블 헤더
+    fwSheet.push([
+      'Supervisor (슈퍼바이저)',
+      'Date (날짜)',
+      'Start Time (시작)',
+      'End Time (종료)',
+      'Fieldwork Time (총)',
+      'Direct (직접)',
+      'Indirect (간접)',
+      'Notes (활동 내용)'
+    ]);
+
+    // 로그 데이터 (날짜순 정렬)
+    const sortedFw = [...data.fieldworkLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    sortedFw.forEach(log => {
+      const hrs = timeToHours(log.startTime, log.endTime);
+      const rawDirect = Number(log.direct) || 0;
+      const direct = Math.min(rawDirect, hrs);
+      const indirect = Math.max(0, hrs - direct);
+      const activities = [
+        ...(log.activities || []),
+        ...(log.customActivities || [])
+      ].join(', ');
+      fwSheet.push([
+        log.supervisor || '',
+        log.date || '',
+        log.startTime || '',
+        log.endTime || '',
+        hrs > 0 ? Math.round(hrs * 100) / 100 : '',
+        direct > 0 ? Math.round(direct * 100) / 100 : '',
+        indirect > 0 ? Math.round(indirect * 100) / 100 : '',
+        activities
+      ]);
+    });
+
+    if (sortedFw.length === 0) {
+      fwSheet.push(['', '', '', '', '', '', '', '(아직 입력된 회기가 없습니다)']);
+    }
+
+    const ws1 = XLSX.utils.aoa_to_sheet(fwSheet);
+    // 컬럼 너비 설정
+    ws1['!cols'] = [
+      { wch: 15 }, { wch: 12 }, { wch: 10 }, { wch: 10 },
+      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 50 }
+    ];
+    // 병합 (제목 행)
+    ws1['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }, // 제목
+      { s: { r: 9, c: 0 }, e: { r: 9, c: 7 } }  // 규정 안내
+    ];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Fieldwork Log');
+
+    // ============ Sheet 2: Supervision Log ============
+    const svSheet = [];
+    svSheet.push(['검단ABA 자격시간 트래커 - SUPERVISION LOG (슈퍼비전 기록지)']);
+    svSheet.push([]);
+    svSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
+    svSheet.push(['시험 유형', data.examType, '', '보고서 작성일', today]);
+    svSheet.push([]);
+
+    svSheet.push(['📊 누적 요약', '현재', '목표 (5%)', '달성률']);
+    svSheet.push([
+      'Total Supervision',
+      Math.round(stats.svTotal * 10) / 10,
+      Math.round(svRequired * 10) / 10,
+      svRequired > 0 ? `${((stats.svTotal / svRequired) * 100).toFixed(1)}%` : '-'
+    ]);
+    svSheet.push([]);
+    svSheet.push(['ℹ️ QABA 규정 안내: 매월 필드워크 시간의 5% 슈퍼비전 필수 · 그룹 최대 50%']);
+    svSheet.push([]);
+
+    svSheet.push([
+      'Date (날짜)',
+      'Supervisor (슈퍼바이저)',
+      'Hours (시간)',
+      'Notes (메모)'
+    ]);
+
+    const sortedSv = [...data.supervisionLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    sortedSv.forEach(log => {
+      svSheet.push([
+        log.date || '',
+        log.supervisor || '',
+        Number(log.hours) || '',
+        log.notes || ''
+      ]);
+    });
+
+    if (sortedSv.length === 0) {
+      svSheet.push(['', '', '', '(아직 입력된 슈퍼비전이 없습니다)']);
+    }
+
+    const ws2 = XLSX.utils.aoa_to_sheet(svSheet);
+    ws2['!cols'] = [
+      { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 50 }
+    ];
+    ws2['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
+      { s: { r: 7, c: 0 }, e: { r: 7, c: 3 } }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Supervision Log');
+
+    // ============ Sheet 3: By Supervisor (슈퍼바이저별 요약) ============
+    const bsMap = {};
+    data.fieldworkLogs.forEach(l => {
+      if (!l.supervisor) return;
+      const hrs = timeToHours(l.startTime, l.endTime);
+      const direct = Math.min(Number(l.direct) || 0, hrs);
+      const indirect = Math.max(0, hrs - direct);
+      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
+      bsMap[l.supervisor].fw += hrs;
+      bsMap[l.supervisor].direct += direct;
+      bsMap[l.supervisor].indirect += indirect;
+      bsMap[l.supervisor].fwCount += 1;
+    });
+    data.supervisionLogs.forEach(l => {
+      if (!l.supervisor) return;
+      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
+      bsMap[l.supervisor].sv += Number(l.hours) || 0;
+      bsMap[l.supervisor].svCount += 1;
+    });
+
+    const bsSheet = [];
+    bsSheet.push(['검단ABA 자격시간 트래커 - 슈퍼바이저별 현황']);
+    bsSheet.push([]);
+    bsSheet.push(['보고서 작성일', today]);
+    bsSheet.push([]);
+    bsSheet.push([
+      'Supervisor (슈퍼바이저)',
+      'Fieldwork (필드워크)',
+      'Direct (직접)',
+      'Indirect (간접)',
+      'Supervision (슈퍼비전)',
+      'Total (총)',
+      'FW 회기수',
+      'SV 회기수'
+    ]);
+
+    const supList = Object.entries(bsMap).sort((a, b) => (b[1].fw + b[1].sv) - (a[1].fw + a[1].sv));
+    supList.forEach(([name, s]) => {
+      bsSheet.push([
+        name,
+        Math.round(s.fw * 10) / 10,
+        Math.round(s.direct * 10) / 10,
+        Math.round(s.indirect * 10) / 10,
+        Math.round(s.sv * 10) / 10,
+        Math.round((s.fw + s.sv) * 10) / 10,
+        s.fwCount,
+        s.svCount
+      ]);
+    });
+
+    if (supList.length === 0) {
+      bsSheet.push(['', '', '', '', '', '', '', '(슈퍼바이저별 데이터가 없습니다)']);
+    }
+
+    const ws3 = XLSX.utils.aoa_to_sheet(bsSheet);
+    ws3['!cols'] = [
+      { wch: 15 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
+      { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }
+    ];
+    ws3['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws3, 'By Supervisor');
+
+    // ============ 다운로드 ============
+    const safeName = (supervisee && supervisee !== '(미입력)' ? supervisee.replace(/[^가-힣a-zA-Z0-9]/g, '') : '검단ABA');
+    const filename = `${safeName}_${data.examType}_보고서_${today}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    showToast('엑셀 보고서가 다운로드되었습니다', 'good');
+  };
+
   const importData = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -343,7 +560,9 @@ export default function App() {
               <option value="QBA">QBA · 2,000hr</option>
               <option value="QASP-S">QASP-S · 1,000hr</option>
             </select>
-            <button onClick={exportData} title="데이터를 JSON 파일로 백업 다운로드"
+            <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
+                    style={headerBtnStyle}>📊</button>
+            <button onClick={exportData} title="전체 데이터 JSON 백업 다운로드 (복원 가능)"
                     style={headerBtnStyle}>💾</button>
             <button onClick={() => fileInputRef.current?.click()} title="백업 파일을 불러와서 복원"
                     style={headerBtnStyle}>📂</button>
@@ -1376,60 +1595,29 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
             </div>
           )}
 
-          {/* 활동 유형 - Direct/Indirect 그룹 + 자유 입력 */}
+          {/* 활동 유형 - 한 줄 (Direct/Indirect 그룹 구분 없음) */}
           <div style={{ marginBottom: 4 }}>
             <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
               활동 유형 <span style={{ fontWeight: 400, fontStyle: 'italic' }}>(선택사항 · 여러 개 가능)</span>
             </div>
 
-            {/* Direct 그룹 */}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, color: C.goldDeep, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>
-                📍 직접 (Direct)
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {DIRECT_ACTIVITIES.map(activity => {
-                  const isSelected = selectedActivities.includes(activity);
-                  return (
-                    <button key={activity} onClick={() => toggleActivity(activity)}
-                      style={{
-                        padding: '6px 12px', fontSize: 13, fontWeight: 500,
-                        border: `1.5px solid ${isSelected ? C.goldDeep : '#E0D5D8'}`,
-                        borderRadius: 16,
-                        background: isSelected ? C.goldDeep : C.white,
-                        color: isSelected ? C.white : C.grayText,
-                        cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
-                      }}>
-                      {isSelected ? '✓ ' : ''}{activity}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Indirect 그룹 */}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, color: C.goodGreen, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>
-                📝 간접 (Indirect)
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {INDIRECT_ACTIVITIES.map(activity => {
-                  const isSelected = selectedActivities.includes(activity);
-                  return (
-                    <button key={activity} onClick={() => toggleActivity(activity)}
-                      style={{
-                        padding: '6px 12px', fontSize: 13, fontWeight: 500,
-                        border: `1.5px solid ${isSelected ? C.goodGreen : '#E0D5D8'}`,
-                        borderRadius: 16,
-                        background: isSelected ? C.goodGreen : C.white,
-                        color: isSelected ? C.white : C.grayText,
-                        cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
-                      }}>
-                      {isSelected ? '✓ ' : ''}{activity}
-                    </button>
-                  );
-                })}
-              </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {[...DIRECT_ACTIVITIES, ...INDIRECT_ACTIVITIES].map(activity => {
+                const isSelected = selectedActivities.includes(activity);
+                return (
+                  <button key={activity} onClick={() => toggleActivity(activity)}
+                    style={{
+                      padding: '6px 12px', fontSize: 13, fontWeight: 500,
+                      border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
+                      borderRadius: 16,
+                      background: isSelected ? C.pinkDeep : C.white,
+                      color: isSelected ? C.white : C.grayText,
+                      cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
+                    }}>
+                    {isSelected ? '✓ ' : ''}{activity}
+                  </button>
+                );
+              })}
             </div>
 
             {/* 사용자 추가 활동 */}
@@ -2340,8 +2528,15 @@ function GuideModal({ onClose }) {
             <li><strong>슈퍼바이저 자동완성</strong>: 한 번 입력한 이름은 자동 제시</li>
           </ul>
 
-          <h3 style={{ color: C.plumDark }}>💾 데이터 백업·복원</h3>
-          <p>상단 <strong>💾 백업</strong>으로 JSON 파일 다운로드, <strong>📂 복원</strong>으로 불러올 수 있습니다. 정기적으로 백업하세요.</p>
+          <h3 style={{ color: C.plumDark }}>💾 데이터 백업·복원·제출</h3>
+          <ul>
+            <li><strong>📊 엑셀 내보내기</strong>: QABA 제출용 보고서 (.xlsx) - 슈퍼바이저나 자격증 신청 시 사용</li>
+            <li><strong>💾 JSON 백업</strong>: 전체 데이터 백업 (다른 기기에서 복원 가능)</li>
+            <li><strong>📂 복원</strong>: 백업 파일 불러오기</li>
+          </ul>
+          <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic', marginTop: 8 }}>
+            ※ 정기적으로 백업하세요. 브라우저 데이터 삭제 시 기록도 함께 삭제됩니다.
+          </p>
 
           <h3 style={{ color: C.plumDark }}>⚠️ 주의사항</h3>
           <ul>
