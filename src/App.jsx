@@ -265,10 +265,16 @@ export default function App() {
     }
 
     const ws1 = XLSX.utils.aoa_to_sheet(fwSheet);
-    // 컬럼 너비 설정
+    // 컬럼 너비 설정 (한글 헤더 고려해서 넉넉하게)
     ws1['!cols'] = [
-      { wch: 15 }, { wch: 12 }, { wch: 10 }, { wch: 10 },
-      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 50 }
+      { wch: 26, customWidth: true }, // A: Supervisor (슈퍼바이저)
+      { wch: 14, customWidth: true }, // B: Date
+      { wch: 20, customWidth: true }, // C: Start Time (시작)
+      { wch: 18, customWidth: true }, // D: End Time (종료)
+      { wch: 22, customWidth: true }, // E: Fieldwork Time (총)
+      { wch: 16, customWidth: true }, // F: Direct (직접)
+      { wch: 18, customWidth: true }, // G: Indirect (간접)
+      { wch: 65, customWidth: true }  // H: Notes
     ];
     // 병합 (제목 행)
     ws1['!merges'] = [
@@ -318,8 +324,13 @@ export default function App() {
     }
 
     const ws2 = XLSX.utils.aoa_to_sheet(svSheet);
+    // Supervision Log 5개 컬럼
     ws2['!cols'] = [
-      { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 50 }
+      { wch: 14, customWidth: true }, // A: Date
+      { wch: 26, customWidth: true }, // B: Supervisor (슈퍼바이저)
+      { wch: 16, customWidth: true }, // C: Hours (시간)
+      { wch: 65, customWidth: true }, // D: Notes (메모)
+      { wch: 18, customWidth: true }  // E: (헤더 영역)
     ];
     ws2['!merges'] = [
       { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
@@ -383,13 +394,79 @@ export default function App() {
 
     const ws3 = XLSX.utils.aoa_to_sheet(bsSheet);
     ws3['!cols'] = [
-      { wch: 15 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
-      { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }
+      { wch: 26, customWidth: true }, // A: Supervisor
+      { wch: 22, customWidth: true }, // B: Fieldwork (필드워크)
+      { wch: 16, customWidth: true }, // C: Direct (직접)
+      { wch: 18, customWidth: true }, // D: Indirect (간접)
+      { wch: 24, customWidth: true }, // E: Supervision (슈퍼비전)
+      { wch: 14, customWidth: true }, // F: Total
+      { wch: 14, customWidth: true }, // G: FW 회기수
+      { wch: 14, customWidth: true }  // H: SV 회기수
     ];
     ws3['!merges'] = [
       { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }
     ];
     XLSX.utils.book_append_sheet(wb, ws3, 'By Supervisor');
+
+    // ============ Sheet 4: Monthly Summary (월별 요약) ============
+    const msSheet = [];
+    msSheet.push(['검단ABA 자격시간 트래커 - 월별 요약']);
+    msSheet.push([]);
+    msSheet.push(['Supervisee', supervisee, '', '시험 유형', data.examType]);
+    msSheet.push(['보고서 작성일', today]);
+    msSheet.push([]);
+    msSheet.push(['ℹ️ QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간']);
+    msSheet.push([]);
+    msSheet.push([
+      'Year-Month (년-월)',
+      'Fieldwork (필드워크)',
+      'Direct (직접)',
+      'Indirect (간접)',
+      'Supervision (슈퍼비전)',
+      '5% 필요',
+      '충족 여부',
+      '월 한도 (20-140hr)'
+    ]);
+
+    // monthlySummary는 최신월 먼저 정렬됨, 엑셀은 오래된순이 자연
+    const monthlyAsc = [...stats.monthlySummary].reverse();
+    monthlyAsc.forEach(m => {
+      const rangeCheck = m.fw === 0 ? '-' : (m.fw < 20 ? '⚠ 20hr 미만' : (m.fw > 140 ? '⚠ 140hr 초과' : '✓'));
+      const fulfillment = m.status === 'empty' ? '-' :
+                          m.status === 'good' ? '✓ 충족' :
+                          `⚠ ${Math.round(-m.diff * 10) / 10}hr 부족`;
+      msSheet.push([
+        m.ym,
+        Math.round(m.fw * 10) / 10,
+        Math.round(m.direct * 10) / 10,
+        Math.round(m.indirect * 10) / 10,
+        Math.round(m.sv * 10) / 10,
+        Math.round(m.need * 10) / 10,
+        fulfillment,
+        rangeCheck
+      ]);
+    });
+
+    if (monthlyAsc.length === 0) {
+      msSheet.push(['', '', '', '', '', '', '', '(아직 데이터가 없습니다)']);
+    }
+
+    const ws4 = XLSX.utils.aoa_to_sheet(msSheet);
+    ws4['!cols'] = [
+      { wch: 20, customWidth: true }, // A: Year-Month
+      { wch: 22, customWidth: true }, // B: Fieldwork (필드워크)
+      { wch: 16, customWidth: true }, // C: Direct (직접)
+      { wch: 18, customWidth: true }, // D: Indirect (간접)
+      { wch: 24, customWidth: true }, // E: Supervision (슈퍼비전)
+      { wch: 14, customWidth: true }, // F: 5% 필요
+      { wch: 22, customWidth: true }, // G: 충족 여부
+      { wch: 24, customWidth: true }  // H: 월 한도
+    ];
+    ws4['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+      { s: { r: 5, c: 0 }, e: { r: 5, c: 7 } }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws4, 'Monthly Summary');
 
     // ============ 다운로드 ============
     const safeName = (supervisee && supervisee !== '(미입력)' ? supervisee.replace(/[^가-힣a-zA-Z0-9]/g, '') : '검단ABA');
@@ -527,11 +604,28 @@ export default function App() {
       shortage: Math.round((m.fw * (exam.svPercent / 100) - m.sv) * 10) / 10
     }));
 
+    // 월별 요약 (대시보드/엑셀에 표시용 - 최신월 먼저)
+    const monthlySummary = monthlyArr.map(m => {
+      const need = m.fw * (exam.svPercent / 100);
+      const diff = m.sv - need;
+      return {
+        ym: m.ym,
+        fw: m.fw,
+        sv: m.sv,
+        direct: m.direct,
+        indirect: m.indirect,
+        need: Math.round(need * 10) / 10,
+        diff: Math.round(diff * 10) / 10,
+        status: m.fw === 0 ? 'empty' : (diff >= -0.1 ? 'good' : 'short')
+      };
+    }).reverse(); // 최신월이 위에
+
     return {
       fwTotal, directTotal, indirectTotal,
       svTotal, svRequired,
       weeklyPace, remaining, estCompletion,
-      monthsShort
+      monthsShort,
+      monthlySummary
     };
   }, [data, exam]);
 
@@ -823,9 +917,63 @@ function Dashboard({ data, stats, exam, update }) {
           )}
         </div>
       </Section>
+
+      {/* 월별 요약 */}
+      {stats.monthlySummary.length > 0 && (
+        <Section title="📅 월별 요약">
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 600 }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${C.pinkLight}` }}>
+                  <th style={thStyle}>월</th>
+                  <th style={thStyle}>필드워크</th>
+                  <th style={thStyle}>직접</th>
+                  <th style={thStyle}>간접</th>
+                  <th style={thStyle}>슈퍼비전</th>
+                  <th style={thStyle}>5% 필요</th>
+                  <th style={thStyle}>충족 여부</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.monthlySummary.map((m, i) => (
+                  <tr key={m.ym} style={{ borderBottom: `1px solid ${C.pinkSoft}` }}>
+                    <td style={{ ...tdStyle, fontWeight: 700, color: C.plumDark }}>{m.ym}</td>
+                    <td style={tdStyle}>{fmt(m.fw)} hr</td>
+                    <td style={{ ...tdStyle, color: C.goldDeep }}>{fmt(m.direct)}</td>
+                    <td style={{ ...tdStyle, color: C.goodGreen }}>{fmt(m.indirect)}</td>
+                    <td style={{ ...tdStyle, color: C.plumDark, fontWeight: 600 }}>{fmt(m.sv)} hr</td>
+                    <td style={tdStyle}>{fmt(m.need)} hr</td>
+                    <td style={tdStyle}>
+                      {m.status === 'good' ? (
+                        <span style={{ color: C.goodGreen, fontWeight: 600 }}>✓ 충족</span>
+                      ) : m.status === 'short' ? (
+                        <span style={{ color: C.warnYellow, fontWeight: 600 }}>⚠ {fmt(-m.diff)}hr 부족</span>
+                      ) : (
+                        <span style={{ color: C.grayText }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ margin: '12px 0 0 0', fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
+            💡 QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간
+          </p>
+        </Section>
+      )}
     </div>
   );
 }
+
+// 테이블 셀 스타일
+const thStyle = {
+  padding: '10px 8px', textAlign: 'left', fontSize: 12, fontWeight: 700,
+  color: C.plumDark, whiteSpace: 'nowrap'
+};
+const tdStyle = {
+  padding: '10px 8px', fontSize: 13, color: C.grayHead
+};
 
 // BigProgressBar - 듀얼 프로그레스 바 (대시보드 핵심)
 function BigProgressBar({ icon, label, sublabel, current, target, color, bgColor, unit = 'hr', isPercent, note, extraInfo }) {
@@ -1196,6 +1344,31 @@ function FieldworkLog({ data, exam, update }) {
     });
   }, [data.fieldworkLogs, sortBy]);
 
+  // 월별로 그룹화
+  const groupedByMonth = useMemo(() => {
+    const groups = {};
+    sortedLogs.forEach(log => {
+      const ym = (log.date || '').substring(0, 7) || '미입력';
+      if (!groups[ym]) {
+        groups[ym] = { ym, logs: [], fw: 0, direct: 0, indirect: 0, sv: 0 };
+      }
+      const hrs = timeToHours(log.startTime, log.endTime);
+      const direct = Math.min(Number(log.direct) || 0, hrs);
+      groups[ym].logs.push(log);
+      groups[ym].fw += hrs;
+      groups[ym].direct += direct;
+      groups[ym].indirect += Math.max(0, hrs - direct);
+    });
+    // 슈퍼비전 시간도 월별 매핑 (5% 충족 표시용)
+    data.supervisionLogs.forEach(log => {
+      const ym = (log.date || '').substring(0, 7);
+      if (groups[ym]) {
+        groups[ym].sv += Number(log.hours) || 0;
+      }
+    });
+    return Object.values(groups).sort((a, b) => sortBy === 'desc' ? b.ym.localeCompare(a.ym) : a.ym.localeCompare(b.ym));
+  }, [sortedLogs, data.supervisionLogs, sortBy]);
+
   return (
     <div>
       <InfoBanner>
@@ -1243,8 +1416,94 @@ function FieldworkLog({ data, exam, update }) {
       {quickMode && <QuickAddRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
 
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 회기가 없습니다.' sub='"새 회기" 버튼을 눌러 시작하세요.' /> : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {sortedLogs.map(log => <FieldworkItem key={log.id} log={log} exam={exam} onUpdate={c => upd(log.id, c)} onDelete={() => del(log.id)} defaultExpanded={log.id === recentlyAddedId} />)}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {groupedByMonth.map(group => (
+            <MonthGroup
+              key={group.ym}
+              group={group}
+              exam={exam}
+              recentlyAddedId={recentlyAddedId}
+              onUpdate={upd}
+              onDelete={del}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// MonthGroup - 월별 그룹 (접기/펼치기)
+function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
+  // 최근 추가된 항목 있는 그룹은 자동 펼침
+  const hasRecent = group.logs.some(l => l.id === recentlyAddedId);
+  const [open, setOpen] = useState(hasRecent);
+
+  // 자동 펼침 (recentlyAddedId 변경 시)
+  useEffect(() => {
+    if (hasRecent) setOpen(true);
+  }, [hasRecent]);
+
+  // 5% 충족 여부
+  const need = group.fw * (exam.svPercent / 100);
+  const diff = group.sv - need;
+  let statusBadge;
+  if (group.fw === 0) {
+    statusBadge = null;
+  } else if (diff >= -0.1) {
+    statusBadge = <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#E8F5E9', color: C.goodGreen }}>✓ 5% 충족</span>;
+  } else {
+    statusBadge = <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFF4D6', color: C.warnYellow }}>⚠ 슈퍼비전 {fmt(-diff)}hr 부족</span>;
+  }
+
+  // ym 표시 (예: 2026-06 → 2026년 6월)
+  const ymDisplay = group.ym === '미입력' ? '날짜 미입력' : (() => {
+    const [y, m] = group.ym.split('-');
+    return `${y}년 ${parseInt(m)}월`;
+  })();
+
+  return (
+    <div style={{
+      background: C.white,
+      borderRadius: 12,
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      overflow: 'hidden',
+      border: `1px solid ${C.pinkLight}`
+    }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', padding: '14px 18px', background: open ? C.pinkPale : C.white,
+          border: 'none', borderBottom: open ? `1px solid ${C.pinkLight}` : 'none',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+          transition: 'background 0.15s'
+        }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.plumDark }}>📅 {ymDisplay}</span>
+          <span style={{ fontSize: 12, color: C.grayText }}>
+            {group.logs.length}회기 · <strong style={{ color: C.pinkDeep }}>{fmt(group.fw)}hr</strong>
+          </span>
+          {statusBadge}
+        </div>
+        <span style={{
+          fontSize: 14, color: C.grayText,
+          transform: open ? 'rotate(180deg)' : 'none',
+          transition: 'transform 0.2s'
+        }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {group.logs.map(log => (
+            <FieldworkItem
+              key={log.id}
+              log={log}
+              exam={exam}
+              onUpdate={c => onUpdate(log.id, c)}
+              onDelete={() => onDelete(log.id)}
+              defaultExpanded={log.id === recentlyAddedId}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -1755,6 +2014,20 @@ function SupervisionLog({ data, update }) {
     });
   }, [data.supervisionLogs, sortBy]);
 
+  // 월별로 그룹화
+  const groupedByMonth = useMemo(() => {
+    const groups = {};
+    sortedLogs.forEach(log => {
+      const ym = (log.date || '').substring(0, 7) || '미입력';
+      if (!groups[ym]) {
+        groups[ym] = { ym, logs: [], total: 0 };
+      }
+      groups[ym].logs.push(log);
+      groups[ym].total += Number(log.hours) || 0;
+    });
+    return Object.values(groups).sort((a, b) => sortBy === 'desc' ? b.ym.localeCompare(a.ym) : a.ym.localeCompare(b.ym));
+  }, [sortedLogs, sortBy]);
+
   return (
     <div>
       <InfoBanner>
@@ -1802,13 +2075,73 @@ function SupervisionLog({ data, update }) {
       {quickMode && <QuickAddSvRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
 
       {sortedLogs.length === 0 ? <EmptyState msg='아직 입력된 슈퍼비전이 없습니다.' sub='"새 슈퍼비전" 버튼을 눌러 시작하세요.' /> : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {sortedLogs.map(log => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {groupedByMonth.map(group => (
+            <SvMonthGroup
+              key={group.ym}
+              group={group}
+              recentlyAddedId={recentlyAddedId}
+              onUpdate={upd}
+              onDelete={del}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 슈퍼비전 월별 그룹
+function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete }) {
+  const hasRecent = group.logs.some(l => l.id === recentlyAddedId);
+  const [open, setOpen] = useState(hasRecent);
+
+  useEffect(() => {
+    if (hasRecent) setOpen(true);
+  }, [hasRecent]);
+
+  const ymDisplay = group.ym === '미입력' ? '날짜 미입력' : (() => {
+    const [y, m] = group.ym.split('-');
+    return `${y}년 ${parseInt(m)}월`;
+  })();
+
+  return (
+    <div style={{
+      background: C.white,
+      borderRadius: 12,
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      overflow: 'hidden',
+      border: `1px solid ${C.pinkLight}`
+    }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', padding: '14px 18px', background: open ? C.pinkPale : C.white,
+          border: 'none', borderBottom: open ? `1px solid ${C.pinkLight}` : 'none',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+          transition: 'background 0.15s'
+        }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.plumDark }}>📅 {ymDisplay}</span>
+          <span style={{ fontSize: 12, color: C.grayText }}>
+            {group.logs.length}회 · <strong style={{ color: C.plumDark }}>{fmt(group.total)}hr</strong>
+          </span>
+        </div>
+        <span style={{
+          fontSize: 14, color: C.grayText,
+          transform: open ? 'rotate(180deg)' : 'none',
+          transition: 'transform 0.2s'
+        }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {group.logs.map(log => (
             <SupervisionItem
               key={log.id}
               log={log}
-              onUpdate={(c) => upd(log.id, c)}
-              onDelete={() => del(log.id)}
+              onUpdate={(c) => onUpdate(log.id, c)}
+              onDelete={() => onDelete(log.id)}
               defaultExpanded={log.id === recentlyAddedId}
             />
           ))}
