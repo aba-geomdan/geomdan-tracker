@@ -39,68 +39,110 @@ const C = {
 
 const STORAGE_KEY = 'geomdan_aba_qualification_data';
 
-// 레거시 데이터 마이그레이션
+// 슈퍼바이지 1명 데이터 정규화 (필드워크/슈퍼비전 로그)
+const normalizeSupervisee = (s) => {
+  const out = { ...s };
+
+  // 필드워크 로그 정리
+  if (Array.isArray(out.fieldworkLogs)) {
+    out.fieldworkLogs = out.fieldworkLogs.map(log => {
+      const fw = { ...log };
+      if ('notes' in fw) delete fw.notes;
+      if ('role' in fw) delete fw.role;
+      if (fw.activity && !fw.activities) {
+        fw.activities = fw.activity.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      if (!Array.isArray(fw.customActivities)) fw.customActivities = [];
+      if (!Array.isArray(fw.activities)) fw.activities = [];
+      return fw;
+    });
+  } else {
+    out.fieldworkLogs = [];
+  }
+
+  // 슈퍼비전 로그 정리 (그룹/개별 분리)
+  if (Array.isArray(out.supervisionLogs)) {
+    const newLogs = [];
+    out.supervisionLogs.forEach(log => {
+      const sv = { ...log };
+      if (('group' in sv || 'individual' in sv) && !('hours' in sv)) {
+        const g = Number(sv.group) || 0;
+        const i = Number(sv.individual) || 0;
+        delete sv.group;
+        delete sv.individual;
+        if (g > 0 && i > 0) {
+          newLogs.push({ ...sv, id: sv.id || Date.now(), hours: i, type: 'individual' });
+          newLogs.push({ ...sv, id: (sv.id || Date.now()) + 1, hours: g, type: 'group' });
+          return;
+        } else if (g > 0) {
+          sv.hours = g;
+          sv.type = 'group';
+        } else {
+          sv.hours = i;
+          sv.type = 'individual';
+        }
+      }
+      if (!sv.type) sv.type = 'individual';
+      newLogs.push(sv);
+    });
+    out.supervisionLogs = newLogs;
+  } else {
+    out.supervisionLogs = [];
+  }
+
+  // 필수 필드 보장
+  if (!out.id) out.id = `sv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  if (!out.name) out.name = '(이름 없음)';
+  if (!out.examType || !EXAM_DATA_KEYS.includes(out.examType)) out.examType = 'QASP-S';
+  if (!out.mainSupervisor) out.mainSupervisor = '';
+  if (!Array.isArray(out.supervisors)) out.supervisors = [];
+  if (!out.startDate) out.startDate = '';
+
+  return out;
+};
+
+const EXAM_DATA_KEYS = ['QBA', 'QASP-S'];
+
+// 레거시 + 신규 데이터 마이그레이션
 const migrateData = (raw) => {
   if (!raw) return null;
   let migrated = false;
-  const d = { ...raw };
+  let d = { ...raw };
 
-  // 필드워크 로그 정리
-  if (Array.isArray(d.fieldworkLogs)) {
-    d.fieldworkLogs = d.fieldworkLogs.map(log => {
-      const out = { ...log };
-      // notes 필드 제거 (필드워크는 메모 없음)
-      if ('notes' in out) {
-        delete out.notes;
-        migrated = true;
-      }
-      // role 필드 제거 (역할 구분 없앰)
-      if ('role' in out) {
-        delete out.role;
-        migrated = true;
-      }
-      // activity 문자열 → activities 배열
-      if (out.activity && !out.activities) {
-        out.activities = out.activity.split(',').map(s => s.trim()).filter(Boolean);
-        migrated = true;
-      }
-      // customActivities 없으면 빈 배열
-      if (!Array.isArray(out.customActivities)) {
-        out.customActivities = [];
-      }
-      return out;
-    });
+  // [신규 구조] supervisees 배열이 이미 있으면 각 슈퍼바이지 정규화만
+  if (Array.isArray(d.supervisees)) {
+    d.supervisees = d.supervisees.map(normalizeSupervisee);
+    // activeSuperviseeId 유효성 확인
+    if (!d.activeSuperviseeId || !d.supervisees.find(s => s.id === d.activeSuperviseeId)) {
+      d.activeSuperviseeId = d.supervisees[0]?.id || null;
+      migrated = true;
+    }
+    return { data: d, migrated };
   }
 
-  // 슈퍼비전: group/individual → hours (합산) + type 필드 추가
-  if (Array.isArray(d.supervisionLogs)) {
-    d.supervisionLogs = d.supervisionLogs.map(log => {
-      const out = { ...log };
-      if (('group' in out || 'individual' in out) && !('hours' in out)) {
-        const g = Number(out.group) || 0;
-        const i = Number(out.individual) || 0;
-        out.hours = g + i;
-        // type 분기: group이 더 많으면 group, 아니면 individual
-        out.type = g > i ? 'group' : 'individual';
-        delete out.group;
-        delete out.individual;
-        migrated = true;
-      }
-      // type 없으면 individual로 기본값 (기존 데이터)
-      if (!out.type) {
-        out.type = 'individual';
-        migrated = true;
-      }
-      return out;
+  // [레거시 구조] 단일 슈퍼바이지 데이터 → supervisees 배열로 변환
+  if (Array.isArray(d.fieldworkLogs) || Array.isArray(d.supervisionLogs)) {
+    const legacySupervisee = normalizeSupervisee({
+      id: `sv_${Date.now()}_legacy`,
+      name: d.superviseeName || '(이름 없음)',
+      examType: d.examType || 'QASP-S',
+      mainSupervisor: d.mainSupervisor || '',
+      supervisors: d.supervisors || [],
+      startDate: d.startDate || '',
+      fieldworkLogs: d.fieldworkLogs || [],
+      supervisionLogs: d.supervisionLogs || []
     });
-  }
 
-  // supervisors 배열 없으면 추가
-  if (!Array.isArray(d.supervisors)) {
-    d.supervisors = [];
+    d = {
+      mode: 'self', // 'self' = 본인 자격 준비, 'supervisor' = 슈퍼바이저로 여러명 관리
+      supervisees: [legacySupervisee],
+      activeSuperviseeId: legacySupervisee.id
+    };
     migrated = true;
+    return { data: d, migrated };
   }
 
+  // 빈 데이터
   return { data: d, migrated };
 };
 
@@ -111,20 +153,16 @@ const loadData = () => {
       const raw = JSON.parse(s);
       const result = migrateData(raw);
       if (result && result.migrated) {
-        // 마이그레이션 후 즉시 저장
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(result.data)); } catch (e) {}
       }
       return result ? result.data : raw;
     }
   } catch (e) {}
+  // 빈 상태 - 슈퍼바이지 0명 (사용자가 첫 슈퍼바이지 추가하도록)
   return {
-    examType: 'QASP-S',
-    superviseeName: '',
-    mainSupervisor: '',
-    supervisors: [],
-    startDate: '',
-    fieldworkLogs: [],
-    supervisionLogs: []
+    mode: 'self',
+    supervisees: [],
+    activeSuperviseeId: null
   };
 };
 
@@ -161,6 +199,7 @@ export default function App() {
   const [data, setData] = useState(loadData());
   const [tab, setTab] = useState('dashboard');
   const [showGuide, setShowGuide] = useState(false);
+  const [showManageSv, setShowManageSv] = useState(false); // 슈퍼바이지 관리 모달
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -173,8 +212,66 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const exam = EXAM_DATA[data.examType];
+  // 활성 슈퍼바이지 가져오기
+  const activeSupervisee = useMemo(() => {
+    if (!data.supervisees || data.supervisees.length === 0) return null;
+    return data.supervisees.find(s => s.id === data.activeSuperviseeId) || data.supervisees[0];
+  }, [data.supervisees, data.activeSuperviseeId]);
+
+  const exam = activeSupervisee ? EXAM_DATA[activeSupervisee.examType] : EXAM_DATA['QASP-S'];
+
+  // 전체 데이터 업데이트 (mode, activeSuperviseeId 등)
   const update = (c) => setData(p => ({ ...p, ...c }));
+
+  // 활성 슈퍼바이지 업데이트 (필드워크/슈퍼비전 로그 등)
+  const updateActive = (c) => {
+    if (!activeSupervisee) return;
+    setData(p => ({
+      ...p,
+      supervisees: p.supervisees.map(s => s.id === activeSupervisee.id ? { ...s, ...c } : s)
+    }));
+  };
+
+  // 슈퍼바이지 관리 함수
+  const addSupervisee = (name, examType = 'QASP-S') => {
+    const id = `sv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const newSv = normalizeSupervisee({
+      id, name: name.trim() || '(이름 없음)', examType,
+      mainSupervisor: '', supervisors: [], startDate: '',
+      fieldworkLogs: [], supervisionLogs: []
+    });
+    setData(p => ({
+      ...p,
+      supervisees: [...(p.supervisees || []), newSv],
+      activeSuperviseeId: p.activeSuperviseeId || newSv.id
+    }));
+    return newSv.id;
+  };
+
+  const removeSupervisee = (id) => {
+    setData(p => {
+      const filtered = p.supervisees.filter(s => s.id !== id);
+      let activeId = p.activeSuperviseeId;
+      if (activeId === id) activeId = filtered[0]?.id || null;
+      return { ...p, supervisees: filtered, activeSuperviseeId: activeId };
+    });
+  };
+
+  const renameSupervisee = (id, newName) => {
+    const trimmed = (newName || '').trim() || '(이름 없음)';
+    setData(p => ({
+      ...p,
+      supervisees: p.supervisees.map(s => s.id === id ? { ...s, name: trimmed } : s)
+    }));
+  };
+
+  const changeSuperviseeExam = (id, newExamType) => {
+    if (!EXAM_DATA[newExamType]) return;
+    setData(p => ({
+      ...p,
+      supervisees: p.supervisees.map(s => s.id === id ? { ...s, examType: newExamType } : s)
+    }));
+  };
 
   // 백업 다운로드
   const exportData = () => {
@@ -189,23 +286,34 @@ export default function App() {
     showToast('백업 파일이 다운로드되었습니다', 'good');
   };
 
-  // 엑셀 보고서 내보내기 (QABA 제출용)
+  // 엑셀 보고서 내보내기 (QABA 제출용 - 활성 슈퍼바이지 기준)
   const exportExcel = () => {
+    if (!activeSupervisee) {
+      showToast('먼저 슈퍼바이지를 추가하세요', 'danger');
+      return;
+    }
     const wb = XLSX.utils.book_new();
     const examTotal = exam.total;
     const examDirectMax = exam.directMax;
     const examIndirectMin = exam.indirectMin;
     const svRequired = stats.svRequired;
-    const supervisee = data.superviseeName || '(미입력)';
-    const mainSv = data.mainSupervisor || '(미입력)';
+    const supervisee = activeSupervisee.name || '(미입력)';
+    const mainSv = activeSupervisee.mainSupervisor || '(미입력)';
     const today = todayYMD();
+
+    // 달성률 표시 헬퍼 (100% 초과는 100%+ 로 표시)
+    const pctStr = (current, target) => {
+      if (target <= 0) return '-';
+      const p = (current / target) * 100;
+      return p >= 100 ? '100%+' : `${p.toFixed(1)}%`;
+    };
 
     // ============ Sheet 1: Fieldwork Log ============
     const fwSheet = [];
     fwSheet.push(['검단ABA 자격시간 트래커 - FIELDWORK LOG (필드워크 기록지)']);
     fwSheet.push([]);
     fwSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
-    fwSheet.push(['시험 유형', data.examType, '', '보고서 작성일', today]);
+    fwSheet.push(['시험 유형', activeSupervisee.examType, '', '보고서 작성일', today]);
     fwSheet.push([]);
 
     // 누적 요약
@@ -214,19 +322,19 @@ export default function App() {
       'Total Fieldwork',
       Math.round(stats.fwTotal * 10) / 10,
       examTotal,
-      examTotal > 0 ? `${((stats.fwTotal / examTotal) * 100).toFixed(1)}%` : '-'
+      pctStr(stats.fwTotal, examTotal)
     ]);
     fwSheet.push([
       'Direct (직접)',
       Math.round(stats.directTotal * 10) / 10,
       `최대 ${examDirectMax}`,
-      examDirectMax > 0 ? `${((stats.directTotal / examDirectMax) * 100).toFixed(1)}%` : '-'
+      pctStr(stats.directTotal, examDirectMax)
     ]);
     fwSheet.push([
       'Indirect (간접)',
       Math.round(stats.indirectTotal * 10) / 10,
       `최소 ${examIndirectMin}`,
-      examIndirectMin > 0 ? `${((stats.indirectTotal / examIndirectMin) * 100).toFixed(1)}%` : '-'
+      pctStr(stats.indirectTotal, examIndirectMin)
     ]);
     fwSheet.push([]);
     fwSheet.push(['ℹ️ QABA 규정 안내: 월 최소 20시간 ~ 최대 140시간 인정 · 매월 슈퍼비전 5% 필수']);
@@ -245,7 +353,7 @@ export default function App() {
     ]);
 
     // 로그 데이터 (날짜순 정렬)
-    const sortedFw = [...data.fieldworkLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const sortedFw = [...activeSupervisee.fieldworkLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     sortedFw.forEach(log => {
       const hrs = timeToHours(log.startTime, log.endTime);
       const rawDirect = Number(log.direct) || 0;
@@ -272,15 +380,15 @@ export default function App() {
     }
 
     const ws1 = XLSX.utils.aoa_to_sheet(fwSheet);
-    // 컬럼 너비 설정 (한글 헤더 고려해서 넉넉하게)
+    // 컬럼 너비 설정 (한글 헤더 + 상단 정보 행 고려해서 넉넉하게)
     ws1['!cols'] = [
       { wch: 26, customWidth: true }, // A: Supervisor (슈퍼바이저)
-      { wch: 14, customWidth: true }, // B: Date
-      { wch: 20, customWidth: true }, // C: Start Time (시작)
-      { wch: 18, customWidth: true }, // D: End Time (종료)
-      { wch: 22, customWidth: true }, // E: Fieldwork Time (총)
-      { wch: 16, customWidth: true }, // F: Direct (직접)
-      { wch: 18, customWidth: true }, // G: Indirect (간접)
+      { wch: 14, customWidth: true }, // B: Date / 또는 "민다솔" 값
+      { wch: 20, customWidth: true }, // C: Start Time
+      { wch: 30, customWidth: true }, // D: End Time / 또는 "Supervisor (메인 슈퍼바이저)" 라벨
+      { wch: 22, customWidth: true }, // E: Fieldwork Time
+      { wch: 16, customWidth: true }, // F: Direct
+      { wch: 18, customWidth: true }, // G: Indirect
       { wch: 65, customWidth: true }  // H: Notes
     ];
     // 병합 (제목 행)
@@ -295,30 +403,33 @@ export default function App() {
     svSheet.push(['검단ABA 자격시간 트래커 - SUPERVISION LOG (슈퍼비전 기록지)']);
     svSheet.push([]);
     svSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
-    svSheet.push(['시험 유형', data.examType, '', '보고서 작성일', today]);
+    svSheet.push(['시험 유형', activeSupervisee.examType, '', '보고서 작성일', today]);
     svSheet.push([]);
 
-    svSheet.push(['📊 누적 요약', '현재', '목표 (5%)', '달성률']);
+    svSheet.push(['📊 누적 요약', '입력 시간', '인정 시간', '목표 (5%)', '달성률 (인정)']);
     svSheet.push([
       'Total Supervision',
       Math.round(stats.svTotal * 10) / 10,
+      Math.round(stats.svAccepted * 10) / 10,
       Math.round(svRequired * 10) / 10,
-      svRequired > 0 ? `${((stats.svTotal / svRequired) * 100).toFixed(1)}%` : '-'
+      pctStr(stats.svAccepted, svRequired)
     ]);
     svSheet.push([
       'Individual (개별)',
       Math.round(stats.svIndividual * 10) / 10,
+      Math.round(stats.svIndividual * 10) / 10,
       '-',
-      stats.svTotal > 0 ? `${(100 - stats.svGroupPct).toFixed(1)}%` : '-'
+      '100% 인정'
     ]);
     svSheet.push([
       'Group (그룹)',
       Math.round(stats.svGroup * 10) / 10,
-      `최대 ${(stats.svTotal * 0.5).toFixed(1)} (50%)`,
-      stats.svTotal > 0 ? `${stats.svGroupPct.toFixed(1)}%${stats.svGroupOver ? ' ⚠ 초과!' : ''}` : '-'
+      Math.round(stats.svGroupAccepted * 10) / 10,
+      '월별 그달 개별 ≤',
+      stats.svGroupExcluded > 0 ? `⚠ ${fmt(stats.svGroupExcluded)}hr 초과 (인정 안 됨)` : '✓ 전부 인정'
     ]);
     svSheet.push([]);
-    svSheet.push(['ℹ️ QABA 규정 안내: 매월 필드워크 시간의 5% 슈퍼비전 필수 · 그룹 슈퍼비전은 전체의 50%까지만 인정']);
+    svSheet.push(['ℹ️ QABA 규정 안내: 매월 필드워크 시간의 5% 슈퍼비전 필수 · 그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정 (전체의 50%까지)']);
     svSheet.push([]);
 
     svSheet.push([
@@ -329,7 +440,7 @@ export default function App() {
       'Notes (메모)'
     ]);
 
-    const sortedSv = [...data.supervisionLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const sortedSv = [...activeSupervisee.supervisionLogs].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     sortedSv.forEach(log => {
       svSheet.push([
         log.date || '',
@@ -345,12 +456,12 @@ export default function App() {
     }
 
     const ws2 = XLSX.utils.aoa_to_sheet(svSheet);
-    // Supervision Log 5개 컬럼
+    // Supervision Log 5개 컬럼 (상단 헤더 라벨 고려)
     ws2['!cols'] = [
-      { wch: 14, customWidth: true }, // A: Date
-      { wch: 14, customWidth: true }, // B: Type
-      { wch: 22, customWidth: true }, // C: Supervisor
-      { wch: 16, customWidth: true }, // D: Hours
+      { wch: 26, customWidth: true }, // A: Date / 또는 "Supervisee (슈퍼바이지)" 라벨
+      { wch: 16, customWidth: true }, // B: Type / 또는 "민다솔" 값
+      { wch: 26, customWidth: true }, // C: Supervisor / 또는 "Supervisor (메인 슈퍼바이저)" 라벨
+      { wch: 30, customWidth: true }, // D: Hours / 또는 "보고서 작성일" 영역
       { wch: 60, customWidth: true }  // E: Notes
     ];
     ws2['!merges'] = [
@@ -361,7 +472,7 @@ export default function App() {
 
     // ============ Sheet 3: By Supervisor (슈퍼바이저별 요약) ============
     const bsMap = {};
-    data.fieldworkLogs.forEach(l => {
+    activeSupervisee.fieldworkLogs.forEach(l => {
       if (!l.supervisor) return;
       const hrs = timeToHours(l.startTime, l.endTime);
       const direct = Math.min(Number(l.direct) || 0, hrs);
@@ -372,7 +483,7 @@ export default function App() {
       bsMap[l.supervisor].indirect += indirect;
       bsMap[l.supervisor].fwCount += 1;
     });
-    data.supervisionLogs.forEach(l => {
+    activeSupervisee.supervisionLogs.forEach(l => {
       if (!l.supervisor) return;
       if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
       const h = Number(l.hours) || 0;
@@ -422,16 +533,16 @@ export default function App() {
 
     const ws3 = XLSX.utils.aoa_to_sheet(bsSheet);
     ws3['!cols'] = [
-      { wch: 22, customWidth: true }, // A: Supervisor
-      { wch: 20, customWidth: true }, // B: Fieldwork
-      { wch: 14, customWidth: true }, // C: Direct
-      { wch: 16, customWidth: true }, // D: Indirect
-      { wch: 12, customWidth: true }, // E: SV 개별
-      { wch: 12, customWidth: true }, // F: SV 그룹
-      { wch: 12, customWidth: true }, // G: SV 합계
+      { wch: 26, customWidth: true }, // A: Supervisor (헤더 23)
+      { wch: 24, customWidth: true }, // B: Fieldwork (헤더 20)
+      { wch: 16, customWidth: true }, // C: Direct (헤더 13)
+      { wch: 20, customWidth: true }, // D: Indirect (헤더 15)
+      { wch: 14, customWidth: true }, // E: SV 개별
+      { wch: 14, customWidth: true }, // F: SV 그룹
+      { wch: 14, customWidth: true }, // G: SV 합계
       { wch: 14, customWidth: true }, // H: Total
-      { wch: 14, customWidth: true }, // I: FW 회기수
-      { wch: 14, customWidth: true }  // J: SV 회기수
+      { wch: 16, customWidth: true }, // I: FW 회기수
+      { wch: 16, customWidth: true }  // J: SV 회기수
     ];
     ws3['!merges'] = [
       { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }
@@ -442,7 +553,7 @@ export default function App() {
     const msSheet = [];
     msSheet.push(['검단ABA 자격시간 트래커 - 월별 요약']);
     msSheet.push([]);
-    msSheet.push(['Supervisee', supervisee, '', '시험 유형', data.examType]);
+    msSheet.push(['Supervisee', supervisee, '', '시험 유형', activeSupervisee.examType]);
     msSheet.push(['보고서 작성일', today]);
     msSheet.push([]);
     msSheet.push(['ℹ️ QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간']);
@@ -454,9 +565,10 @@ export default function App() {
       'Indirect (간접)',
       'SV 개별',
       'SV 그룹',
-      'SV 합계',
+      'SV 입력 합계',
+      'SV 인정 합계',
       '5% 필요',
-      '충족 여부',
+      '충족 여부 (인정 기준)',
       '월 한도 (20-140hr)'
     ]);
 
@@ -464,9 +576,13 @@ export default function App() {
     const monthlyAsc = [...stats.monthlySummary].reverse();
     monthlyAsc.forEach(m => {
       const rangeCheck = m.fw === 0 ? '-' : (m.fw < 20 ? '⚠ 20hr 미만' : (m.fw > 140 ? '⚠ 140hr 초과' : '✓'));
-      const fulfillment = m.status === 'empty' ? '-' :
-                          m.status === 'good' ? '✓ 충족' :
-                          `⚠ ${Math.round(-m.diff * 10) / 10}hr 부족`;
+      let fulfillment = m.status === 'empty' ? '-' :
+                        m.status === 'good' ? '✓ 충족' :
+                        `⚠ ${Math.round(-m.diff * 10) / 10}hr 부족`;
+      // 그룹 초과 표시 추가
+      if (m.svGroupExcluded > 0) {
+        fulfillment += ` (그룹 ${Math.round(m.svGroupExcluded * 10) / 10}hr 초과)`;
+      }
       msSheet.push([
         m.ym,
         Math.round(m.fw * 10) / 10,
@@ -475,6 +591,7 @@ export default function App() {
         Math.round((m.svIndividual || 0) * 10) / 10,
         Math.round((m.svGroup || 0) * 10) / 10,
         Math.round(m.sv * 10) / 10,
+        Math.round((m.svAccepted || 0) * 10) / 10,
         Math.round(m.need * 10) / 10,
         fulfillment,
         rangeCheck
@@ -482,31 +599,32 @@ export default function App() {
     });
 
     if (monthlyAsc.length === 0) {
-      msSheet.push(['', '', '', '', '', '', '', '', '', '(아직 데이터가 없습니다)']);
+      msSheet.push(['', '', '', '', '', '', '', '', '', '', '(아직 데이터가 없습니다)']);
     }
 
     const ws4 = XLSX.utils.aoa_to_sheet(msSheet);
     ws4['!cols'] = [
-      { wch: 18, customWidth: true }, // A: Year-Month
-      { wch: 20, customWidth: true }, // B: Fieldwork
-      { wch: 14, customWidth: true }, // C: Direct
-      { wch: 16, customWidth: true }, // D: Indirect
-      { wch: 12, customWidth: true }, // E: SV 개별
-      { wch: 12, customWidth: true }, // F: SV 그룹
-      { wch: 14, customWidth: true }, // G: SV 합계
-      { wch: 12, customWidth: true }, // H: 5% 필요
-      { wch: 20, customWidth: true }, // I: 충족 여부
-      { wch: 22, customWidth: true }  // J: 월 한도
+      { wch: 22, customWidth: true }, // A: Year-Month (헤더 "Year-Month (년-월)" = 18)
+      { wch: 24, customWidth: true }, // B: Fieldwork (헤더 "Fieldwork (필드워크)" = 20)
+      { wch: 16, customWidth: true }, // C: Direct (헤더 "Direct (직접)" = 13)
+      { wch: 20, customWidth: true }, // D: Indirect (헤더 "Indirect (간접)" = 15)
+      { wch: 14, customWidth: true }, // E: SV 개별 (헤더 "SV 개별" = 7)
+      { wch: 14, customWidth: true }, // F: SV 그룹
+      { wch: 18, customWidth: true }, // G: SV 입력 합계 (헤더 "SV 입력 합계" = 12)
+      { wch: 18, customWidth: true }, // H: SV 인정 합계
+      { wch: 14, customWidth: true }, // I: 5% 필요
+      { wch: 26, customWidth: true }, // J: 충족 여부 (인정 기준) - 헤더 23 + 데이터 길어질 수 있음
+      { wch: 24, customWidth: true }  // K: 월 한도
     ];
     ws4['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
-      { s: { r: 5, c: 0 }, e: { r: 5, c: 9 } }
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
+      { s: { r: 5, c: 0 }, e: { r: 5, c: 10 } }
     ];
     XLSX.utils.book_append_sheet(wb, ws4, 'Monthly Summary');
 
     // ============ 다운로드 ============
     const safeName = (supervisee && supervisee !== '(미입력)' ? supervisee.replace(/[^가-힣a-zA-Z0-9]/g, '') : '검단ABA');
-    const filename = `${safeName}_${data.examType}_보고서_${today}.xlsx`;
+    const filename = `${safeName}_${activeSupervisee.examType}_보고서_${today}.xlsx`;
     XLSX.writeFile(wb, filename);
     showToast('엑셀 보고서가 다운로드되었습니다', 'good');
   };
@@ -518,12 +636,15 @@ export default function App() {
     reader.onload = (ev) => {
       try {
         const imported = JSON.parse(ev.target.result);
-        if (!Array.isArray(imported.fieldworkLogs) || !Array.isArray(imported.supervisionLogs)) {
+        // 신구 백업 모두 지원
+        const isMulti = Array.isArray(imported.supervisees);
+        const isLegacy = Array.isArray(imported.fieldworkLogs) && Array.isArray(imported.supervisionLogs);
+        if (!isMulti && !isLegacy) {
           showToast('올바른 백업 파일이 아닙니다', 'danger');
           return;
         }
         if (window.confirm('현재 데이터를 백업 파일로 덮어쓸까요?\n(현재 데이터는 삭제됩니다)')) {
-          // 마이그레이션 적용
+          // 마이그레이션 적용 (레거시 → 신규 구조 자동 변환)
           const result = migrateData(imported);
           setData(result ? result.data : imported);
           showToast('데이터가 복원되었습니다', 'good');
@@ -536,16 +657,30 @@ export default function App() {
     e.target.value = '';
   };
 
-  // 통계 계산
+  // 통계 계산 (활성 슈퍼바이지 기준)
   const stats = useMemo(() => {
+    // 활성 슈퍼바이지 없으면 빈 통계
+    if (!activeSupervisee) {
+      return {
+        fwTotal: 0, directTotal: 0, indirectTotal: 0,
+        svTotal: 0, svRequired: 0, svGroup: 0, svIndividual: 0, svGroupPct: 0, svGroupOver: false,
+        svAccepted: 0, svGroupAccepted: 0, svGroupExcluded: 0,
+        weeklyPace: 0, remaining: 0, estCompletion: '-',
+        monthsShort: [], monthlySummary: []
+      };
+    }
+
+    const fieldworkLogs = activeSupervisee.fieldworkLogs || [];
+    const supervisionLogs = activeSupervisee.supervisionLogs || [];
+
     // 필드워크 누적
     let fwTotal = 0;
     let directTotal = 0;
     let indirectTotal = 0;
 
-    data.fieldworkLogs.forEach(l => {
+    fieldworkLogs.forEach(l => {
       const hrs = timeToHours(l.startTime, l.endTime);
-      const direct = Math.min(Number(l.direct) || 0, hrs); // 총 시간 초과는 무시
+      const direct = Math.min(Number(l.direct) || 0, hrs);
       const indirect = Math.max(0, hrs - direct);
       fwTotal += hrs;
       directTotal += direct;
@@ -556,7 +691,7 @@ export default function App() {
     let svTotal = 0;
     let svGroup = 0;
     let svIndividual = 0;
-    data.supervisionLogs.forEach(l => {
+    supervisionLogs.forEach(l => {
       const h = Number(l.hours) || 0;
       svTotal += h;
       if (l.type === 'group') svGroup += h;
@@ -565,40 +700,52 @@ export default function App() {
 
     // 슈퍼비전 5% 요구 (전체 필드워크 기준)
     const svRequired = fwTotal * (exam.svPercent / 100);
-    // 그룹 슈퍼비전 비율 (총 슈퍼비전 대비) - QABA 50% 한도
+    // 그룹 슈퍼비전 비율 (총 슈퍼비전 대비) - 참고용
     const svGroupPct = svTotal > 0 ? (svGroup / svTotal) * 100 : 0;
-    const svGroupOver = svGroupPct > 50; // 50% 초과 시 경고
 
-    // 월별 데이터 (그룹/개별 분리)
+    // 월별 데이터 (그룹/개별 분리 + 월별 인정 시간)
+    // ⚠ QABA 규정: 그룹 50% 한도는 월별 단위 적용
     const monthMap = {};
-    data.fieldworkLogs.forEach(l => {
+    fieldworkLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
       const hrs = timeToHours(l.startTime, l.endTime);
       const direct = Math.min(Number(l.direct) || 0, hrs);
       const indirect = Math.max(0, hrs - direct);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0 };
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svAccepted: 0, svGroup: 0, svIndividual: 0, svGroupExcluded: 0, direct: 0, indirect: 0 };
       monthMap[ym].fw += hrs;
       monthMap[ym].direct += direct;
       monthMap[ym].indirect += indirect;
     });
-    data.supervisionLogs.forEach(l => {
+    supervisionLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0 };
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svAccepted: 0, svGroup: 0, svIndividual: 0, svGroupExcluded: 0, direct: 0, indirect: 0 };
       const h = Number(l.hours) || 0;
       monthMap[ym].sv += h;
       if (l.type === 'group') monthMap[ym].svGroup += h;
       else monthMap[ym].svIndividual += h;
     });
+    // 월별 인정 시간 계산 (그룹은 그 달의 개별 시간만큼만)
+    Object.values(monthMap).forEach(m => {
+      const monthGroupAccepted = Math.min(m.svGroup, m.svIndividual);
+      m.svGroupExcluded = m.svGroup - monthGroupAccepted;
+      m.svAccepted = m.svIndividual + monthGroupAccepted;
+    });
     const monthlyArr = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym));
+
+    // ⭐ 전체 인정 시간 = 월별 인정 시간의 합 (정확한 QABA 규정)
+    const svAccepted = monthlyArr.reduce((s, m) => s + m.svAccepted, 0);
+    const svGroupAccepted = monthlyArr.reduce((s, m) => s + (m.svGroup - m.svGroupExcluded), 0);
+    const svGroupExcluded = monthlyArr.reduce((s, m) => s + m.svGroupExcluded, 0);
+    const svGroupOver = svGroupExcluded > 0; // 어느 달이든 초과한 경우
 
     // 페이스 - 최근 4주 페이스로 계산 (더 정확한 트렌드 반영)
     const now = new Date();
     const fourWeeksAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
 
     // 최근 4주 동안의 필드워크
-    const recentFw = data.fieldworkLogs.reduce((s, l) => {
+    const recentFw = fieldworkLogs.reduce((s, l) => {
       if (!l.date) return s;
       const logDate = parseLocalDate(l.date);
       if (logDate >= fourWeeksAgo && logDate <= now) {
@@ -607,12 +754,9 @@ export default function App() {
       return s;
     }, 0);
 
-    // 시작일 (안내용)
-    const dates = data.fieldworkLogs.map(l => l.date).filter(Boolean).sort();
-    const startDate = data.startDate || (dates[0] || '');
-
     // 최근 4주 페이스 (실제 데이터 있는 주 수로 나눔)
     // 첫 회기가 4주 안에 있으면 그 기간만큼만, 아니면 4주 전체
+    const dates = fieldworkLogs.map(l => l.date).filter(Boolean).sort();
     let recentWeeks = 4;
     if (dates.length > 0) {
       const firstDate = parseLocalDate(dates[0]);
@@ -626,11 +770,12 @@ export default function App() {
     let estCompletion = '-';
     if (weeklyPace > 0 && remaining > 0) {
       const weeksRemaining = remaining / weeklyPace;
-      if (weeksRemaining <= 520) {
+      // QABA 누적 기간 7년 = 365주 기준
+      if (weeksRemaining <= 365) {
         const target = new Date(Date.now() + weeksRemaining * 7 * 24 * 60 * 60 * 1000);
         estCompletion = dateToYMD(target);
       } else {
-        estCompletion = '🐢 페이스 부족';
+        estCompletion = '🐢 페이스 부족 (7년 초과)';
       }
     } else if (remaining === 0) {
       estCompletion = '✅ 달성!';
@@ -640,30 +785,34 @@ export default function App() {
 
     const thisYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    // 월별 5% 미충족 분석 (지난달 까지만)
+    // 월별 5% 미충족 분석 (지난달 까지만, 인정 시간 기준)
     const monthsShort = monthlyArr.filter(m => {
       if (m.ym >= thisYM) return false; // 이번 달은 진행 중이라 제외
       if (m.fw === 0) return false; // 필드워크 없으면 슈퍼비전 의무도 없음
       const needed = m.fw * (exam.svPercent / 100);
-      return m.sv < needed - 0.01;
+      return m.svAccepted < needed - 0.01;
     }).map(m => ({
       ym: m.ym,
       fw: m.fw,
-      sv: m.sv,
+      sv: m.svAccepted, // 인정 시간 기준
+      svInput: m.sv, // 입력된 총 시간
+      svGroupExcluded: m.svGroupExcluded,
       needed: Math.round(m.fw * (exam.svPercent / 100) * 10) / 10,
-      shortage: Math.round((m.fw * (exam.svPercent / 100) - m.sv) * 10) / 10
+      shortage: Math.round((m.fw * (exam.svPercent / 100) - m.svAccepted) * 10) / 10
     }));
 
-    // 월별 요약 (대시보드/엑셀에 표시용 - 최신월 먼저)
+    // 월별 요약 (대시보드/엑셀에 표시용 - 최신월 먼저, 인정 시간 기준)
     const monthlySummary = monthlyArr.map(m => {
       const need = m.fw * (exam.svPercent / 100);
-      const diff = m.sv - need;
+      const diff = m.svAccepted - need;
       return {
         ym: m.ym,
         fw: m.fw,
-        sv: m.sv,
+        sv: m.sv, // 입력된 총
+        svAccepted: m.svAccepted, // 인정
         svGroup: m.svGroup,
         svIndividual: m.svIndividual,
+        svGroupExcluded: m.svGroupExcluded,
         direct: m.direct,
         indirect: m.indirect,
         need: Math.round(need * 10) / 10,
@@ -675,11 +824,12 @@ export default function App() {
     return {
       fwTotal, directTotal, indirectTotal,
       svTotal, svRequired, svGroup, svIndividual, svGroupPct, svGroupOver,
+      svAccepted, svGroupAccepted, svGroupExcluded,
       weeklyPace, remaining, estCompletion,
       monthsShort,
       monthlySummary
     };
-  }, [data, exam]);
+  }, [activeSupervisee, exam]);
 
   return (
     <div style={{ fontFamily: '"Pretendard", "맑은 고딕", -apple-system, sans-serif', background: C.bg, minHeight: '100vh', color: C.grayText }}>
@@ -694,20 +844,41 @@ export default function App() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <select value={data.examType} onChange={e => {
-              const hasData = data.fieldworkLogs.length > 0 || data.supervisionLogs.length > 0;
-              if (!hasData || window.confirm(`시험을 ${e.target.value}로 변경하시겠습니까?\n\n• 기존 입력 데이터는 그대로 유지됩니다\n• 자격 기준(총 시간, Direct/Indirect 한도 등)만 바뀝니다`)) {
-                update({ examType: e.target.value });
-              } else {
-                e.target.value = data.examType;
-              }
-            }}
-                    style={{ padding: '10px 16px', fontSize: 14, fontWeight: 600, color: C.pinkDeep, background: C.inputBg, border: `1.5px solid ${C.pinkGold}`, borderRadius: 8, cursor: 'pointer', outline: 'none' }}>
-              <option value="QBA">QBA · 2,000hr</option>
-              <option value="QASP-S">QASP-S · 1,000hr</option>
-            </select>
-            <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
-                    style={headerBtnStyle}>📊</button>
+            {/* 슈퍼바이지 전환 드롭다운 */}
+            {data.supervisees && data.supervisees.length > 0 ? (
+              <>
+                <select value={data.activeSuperviseeId || ''}
+                        onChange={e => update({ activeSuperviseeId: e.target.value })}
+                        title="현재 보고 있는 슈퍼바이지"
+                        style={{ padding: '10px 12px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkSoft, border: `1.5px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
+                  {data.supervisees.map(sv => (
+                    <option key={sv.id} value={sv.id}>👤 {sv.name} ({sv.examType})</option>
+                  ))}
+                </select>
+                <button onClick={() => setShowManageSv(true)} title="슈퍼바이지 추가·삭제·이름 변경"
+                        style={headerBtnStyle}>👥</button>
+              </>
+            ) : (
+              <button onClick={() => setShowManageSv(true)}
+                      style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                + 첫 슈퍼바이지 추가
+              </button>
+            )}
+            {activeSupervisee && (
+              <select value={activeSupervisee.examType} onChange={e => {
+                const newExam = e.target.value;
+                const hasData = (activeSupervisee.fieldworkLogs || []).length > 0 || (activeSupervisee.supervisionLogs || []).length > 0;
+                if (!hasData || window.confirm(`이 슈퍼바이지의 시험을 ${newExam}로 변경하시겠습니까?\n\n• 기존 입력 데이터는 그대로 유지됩니다\n• 자격 기준(총 시간, Direct/Indirect 한도 등)만 바뀝니다`)) {
+                  changeSuperviseeExam(activeSupervisee.id, newExam);
+                }
+              }}
+                      style={{ padding: '10px 14px', fontSize: 13, fontWeight: 600, color: C.pinkDeep, background: C.inputBg, border: `1.5px solid ${C.pinkGold}`, borderRadius: 8, cursor: 'pointer', outline: 'none' }}>
+                <option value="QBA">QBA · 2,000hr</option>
+                <option value="QASP-S">QASP-S · 1,000hr</option>
+              </select>
+            )}
+            <button onClick={exportExcel} title="현재 슈퍼바이지의 QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
+                    style={headerBtnStyle} disabled={!activeSupervisee}>📊</button>
             <button onClick={exportData} title="전체 데이터 JSON 백업 다운로드 (복원 가능)"
                     style={headerBtnStyle}>💾</button>
             <button onClick={() => fileInputRef.current?.click()} title="백업 파일을 불러와서 복원"
@@ -722,6 +893,7 @@ export default function App() {
       <nav style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, display: 'flex', maxWidth: 1200, margin: '0 auto', padding: '0 24px', gap: 4, overflowX: 'auto' }}>
         {[
           { id: 'dashboard', l: '📊 대시보드' },
+          ...(data.supervisees && data.supervisees.length >= 2 ? [{ id: 'overview', l: '👥 전체 현황' }] : []),
           { id: 'fieldwork', l: '📋 필드워크' },
           { id: 'supervision', l: '🎓 슈퍼비전' },
           { id: 'info', l: '📚 시험 정보' }
@@ -734,22 +906,30 @@ export default function App() {
       </nav>
 
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
-        {/* 슈퍼바이저 자동완성 목록 (메인 + 추가 + 과거 사용 이름) */}
+        {/* 슈퍼바이저 자동완성 목록 (활성 슈퍼바이지 기준) */}
         <datalist id="supervisor-list">
           {(() => {
+            if (!activeSupervisee) return null;
             const set = new Set();
-            if (data.mainSupervisor) set.add(data.mainSupervisor);
-            (data.supervisors || []).forEach(s => set.add(s));
-            data.fieldworkLogs.forEach(l => { if (l.supervisor) set.add(l.supervisor); });
-            data.supervisionLogs.forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            if (activeSupervisee.mainSupervisor) set.add(activeSupervisee.mainSupervisor);
+            (activeSupervisee.supervisors || []).forEach(s => set.add(s));
+            (activeSupervisee.fieldworkLogs || []).forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            (activeSupervisee.supervisionLogs || []).forEach(l => { if (l.supervisor) set.add(l.supervisor); });
             return Array.from(set).map(s => <option key={s} value={s} />);
           })()}
         </datalist>
 
-        {tab === 'dashboard' && <Dashboard data={data} stats={stats} exam={exam} update={update} />}
-        {tab === 'fieldwork' && <FieldworkLog data={data} exam={exam} update={update} />}
-        {tab === 'supervision' && <SupervisionLog data={data} update={update} />}
-        {tab === 'info' && <ExamInfoTab currentExam={data.examType} />}
+        {!activeSupervisee ? (
+          <EmptyStateNoSupervisee onAdd={() => setShowManageSv(true)} />
+        ) : (
+          <>
+            {tab === 'dashboard' && <Dashboard activeSupervisee={activeSupervisee} stats={stats} exam={exam} updateActive={updateActive} />}
+            {tab === 'overview' && <OverviewTab supervisees={data.supervisees} onSelect={(id) => { update({ activeSuperviseeId: id }); setTab('dashboard'); }} />}
+            {tab === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
+            {tab === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+            {tab === 'info' && <ExamInfoTab currentExam={activeSupervisee.examType} />}
+          </>
+        )}
       </main>
 
       <footer style={{ background: C.pinkPale, padding: '28px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
@@ -759,6 +939,18 @@ export default function App() {
       </footer>
 
       {showGuide && <GuideModal onClose={() => setShowGuide(false)} />}
+      {showManageSv && (
+        <ManageSuperviseesModal
+          supervisees={data.supervisees || []}
+          activeId={data.activeSuperviseeId}
+          onAdd={addSupervisee}
+          onRemove={removeSupervisee}
+          onRename={renameSupervisee}
+          onChangeExam={changeSuperviseeExam}
+          onSelect={(id) => update({ activeSuperviseeId: id })}
+          onClose={() => setShowManageSv(false)}
+        />
+      )}
       {toast && <Toast {...toast} />}
     </div>
   );
@@ -787,7 +979,7 @@ function Toast({ msg, type }) {
 // ============================================
 // 🎉 환영/시작 안내 카드
 // ============================================
-function WelcomeCard({ examType }) {
+function WelcomeCard({ examType, superviseeName }) {
   const isQASP = examType === 'QASP-S';
   return (
     <div style={{
@@ -797,14 +989,14 @@ function WelcomeCard({ examType }) {
       padding: 28
     }}>
       <h2 style={{ margin: '0 0 12px 0', color: C.pinkDeep, fontSize: 22, fontWeight: 700 }}>
-        🎉 검단ABA 자격시간 트래커에 오신 것을 환영합니다
+        🎉 {superviseeName ? `${superviseeName}님` : '새 슈퍼바이지'}의 기록을 시작해보세요
       </h2>
       <p style={{ margin: '0 0 20px 0', fontSize: 14, color: C.plumDark, lineHeight: 1.7 }}>
         <strong>{examType}</strong> 자격 준비를 함께 시작해요. 아래 3단계로 시작할 수 있습니다.
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-        <StartStep num="1" title="시험 종류 확인" desc="우측 상단에서 본인의 시험을 선택하세요 (QBA / QASP-S)" />
-        <StartStep num="2" title="사용자 정보 입력" desc="아래 본인·슈퍼바이저 이름을 적어주세요" />
+        <StartStep num="1" title="시험 종류 확인" desc="우측 상단에서 시험을 선택하세요 (QBA / QASP-S)" />
+        <StartStep num="2" title="슈퍼바이저 정보 입력" desc="아래 메인 슈퍼바이저 이름을 적어주세요" />
         <StartStep num="3" title="기록 추가" desc="📋 필드워크 · 🎓 슈퍼비전 탭에서 매번 입력하세요" />
       </div>
       <div style={{ marginTop: 16, padding: 12, background: C.white, borderRadius: 8, fontSize: 12, color: C.grayHead, lineHeight: 1.6 }}>
@@ -867,18 +1059,19 @@ function MonthlyShortAlert({ monthsShort }) {
         {visible.map(m => (
           <div key={m.ym} style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '8px 12px', background: C.white, borderRadius: 6, fontSize: 12
+            padding: '8px 12px', background: C.white, borderRadius: 6, fontSize: 12, flexWrap: 'wrap', gap: 4
           }}>
             <span style={{ color: C.plumDark, fontWeight: 600 }}>{m.ym}</span>
             <span style={{ color: C.grayText }}>
-              필드워크 {fmt(m.fw)}hr · 슈퍼비전 {fmt(m.sv)}/{fmt(m.needed)}hr ·
-              <strong style={{ color: C.dangerRed, marginLeft: 4 }}>{fmt(m.shortage)}hr 부족</strong>
+              필드워크 {fmt(m.fw)}hr · 슈퍼비전 인정 <strong>{fmt(m.sv)}</strong>/{fmt(m.needed)}hr
+              {m.svGroupExcluded > 0 && <span style={{ color: C.dangerRed, fontSize: 11 }}> (그룹 {fmt(m.svGroupExcluded)}hr 초과)</span>}
+              <strong style={{ color: C.dangerRed, marginLeft: 4 }}> · {fmt(m.shortage)}hr 부족</strong>
             </span>
           </div>
         ))}
       </div>
       <div style={{ marginTop: 10, fontSize: 11, color: '#8A6D2A', fontStyle: 'italic' }}>
-        💡 슈퍼비전은 매월 단위로 5%를 충족해야 합니다. 이미 지난 달의 부족분은 다음 달에 보충하기 어려울 수 있어요.
+        💡 슈퍼비전은 매월 단위로 5%를 충족해야 합니다. <strong>그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정</strong>되므로, 그룹이 많은 달은 부족할 수 있어요.
       </div>
     </div>
   );
@@ -887,13 +1080,15 @@ function MonthlyShortAlert({ monthsShort }) {
 // ============================================
 // 📊 DASHBOARD
 // ============================================
-function Dashboard({ data, stats, exam, update }) {
+function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
+  const data = activeSupervisee; // 내부에선 data로 사용 (기존 코드 호환)
+  const update = updateActive;
   const hasNoData = data.fieldworkLogs.length === 0 && data.supervisionLogs.length === 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* 1. 빈 상태 환영 카드 */}
-      {hasNoData && <WelcomeCard examType={data.examType} />}
+      {hasNoData && <WelcomeCard examType={data.examType} superviseeName={data.name} />}
 
       {/* 2. 월별 5% 미충족 경고 */}
       {stats.monthsShort && stats.monthsShort.length > 0 && (
@@ -926,18 +1121,18 @@ function Dashboard({ data, stats, exam, update }) {
           />
           <BigProgressBar
             icon="🎓"
-            label="슈퍼비전"
+            label="슈퍼비전 (인정 시간 기준)"
             sublabel={stats.fwTotal > 0 ? `현재 필드워크 ${fmtI(stats.fwTotal)}hr × 5% = 목표 ${fmt(stats.svRequired)}hr` : null}
-            current={stats.svTotal}
+            current={stats.svAccepted}
             target={stats.svRequired}
             color={C.plumDark}
             bgColor={C.pinkSoft}
             unit="hr"
             isPercent={true}
-            note={stats.fwTotal === 0 ? '필드워크 기록 추가 시 목표가 자동 설정됩니다' : null}
+            note={stats.fwTotal === 0 ? '필드워크 기록 추가 시 목표가 자동 설정됩니다' : (stats.svGroupExcluded > 0 ? `⚠ 그룹 ${fmt(stats.svGroupExcluded)}hr은 50% 한도 초과로 인정 안 됨 (입력 ${fmt(stats.svTotal)}hr → 인정 ${fmt(stats.svAccepted)}hr)` : null)}
             extraInfo={stats.svTotal > 0 ? [
-              { label: '👤 개별 (Individual)', value: stats.svIndividual, color: C.goldDeep, plain: true, hint: `전체의 ${(100 - stats.svGroupPct).toFixed(0)}%` },
-              { label: '👥 그룹 (Group, 최대 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ ${stats.svGroupPct.toFixed(1)}% 초과!` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
+              { label: '👤 개별 (Individual)', value: stats.svIndividual, color: C.goldDeep, plain: true, hint: `전체 입력의 ${(100 - stats.svGroupPct).toFixed(0)}%` },
+              { label: '👥 그룹 (Group, 최대 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ 인정 ${fmt(stats.svGroupAccepted)}hr만 (${fmt(stats.svGroupExcluded)}hr 초과)` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
             ] : null}
           />
         </div>
@@ -976,14 +1171,14 @@ function Dashboard({ data, stats, exam, update }) {
       {stats.monthlySummary.length > 0 && (
         <Section title="📅 월별 요약">
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 600 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 700 }}>
               <thead>
                 <tr style={{ borderBottom: `2px solid ${C.pinkLight}` }}>
                   <th style={thStyle}>월</th>
                   <th style={thStyle}>필드워크</th>
                   <th style={thStyle}>직접</th>
                   <th style={thStyle}>간접</th>
-                  <th style={thStyle}>슈퍼비전</th>
+                  <th style={thStyle}>SV 입력 / 인정</th>
                   <th style={thStyle}>5% 필요</th>
                   <th style={thStyle}>충족 여부</th>
                 </tr>
@@ -995,7 +1190,16 @@ function Dashboard({ data, stats, exam, update }) {
                     <td style={tdStyle}>{fmt(m.fw)} hr</td>
                     <td style={{ ...tdStyle, color: C.goldDeep }}>{fmt(m.direct)}</td>
                     <td style={{ ...tdStyle, color: C.goodGreen }}>{fmt(m.indirect)}</td>
-                    <td style={{ ...tdStyle, color: C.plumDark, fontWeight: 600 }}>{fmt(m.sv)} hr</td>
+                    <td style={tdStyle}>
+                      <strong style={{ color: C.plumDark }}>{fmt(m.svAccepted)}</strong>
+                      {m.svGroupExcluded > 0 ? (
+                        <span style={{ fontSize: 11, color: C.dangerRed, marginLeft: 4 }}>
+                          (입력 {fmt(m.sv)}, 그룹 {fmt(m.svGroupExcluded)} 초과)
+                        </span>
+                      ) : (
+                        m.sv !== m.svAccepted && <span style={{ fontSize: 11, color: C.grayText, marginLeft: 4 }}>({fmt(m.sv)})</span>
+                      )}
+                    </td>
                     <td style={tdStyle}>{fmt(m.need)} hr</td>
                     <td style={tdStyle}>
                       {m.status === 'good' ? (
@@ -1012,7 +1216,7 @@ function Dashboard({ data, stats, exam, update }) {
             </table>
           </div>
           <p style={{ margin: '12px 0 0 0', fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
-            💡 QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간
+            💡 QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정 (50% 한도) · 월 최소 20시간 ~ 최대 140시간
           </p>
         </Section>
       )}
@@ -1158,7 +1362,7 @@ function BigProgressBar({ icon, label, sublabel, current, target, color, bgColor
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 32, fontWeight: 700, color: color, letterSpacing: '-0.02em', lineHeight: 1 }}>
-            {target > 0 ? `${pct.toFixed(1)}%` : '—'}
+            {target > 0 ? (pct >= 100 ? '100%+' : `${pct.toFixed(1)}%`) : '—'}
           </div>
           <div style={{ fontSize: 12, fontWeight: 600, color: statusColor, marginTop: 4 }}>
             {statusText}
@@ -1192,6 +1396,18 @@ function BigProgressBar({ icon, label, sublabel, current, target, color, bgColor
           }} />
         </div>
       </div>
+
+      {/* 그룹 초과 등 경고 메시지 (note가 있고 target > 0일 때) */}
+      {note && target > 0 && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px',
+          background: '#FFF4D6', borderRadius: 8,
+          fontSize: 12, color: '#7A5538', lineHeight: 1.5,
+          border: `1px solid ${C.pinkGold}`
+        }}>
+          {note}
+        </div>
+      )}
 
       {/* 추가 정보 (Direct/Indirect) */}
       {extraInfo && (
@@ -1298,8 +1514,8 @@ function CompactUserInfo({ data, update }) {
     <div style={{ background: C.white, borderRadius: 12, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 200px' }}>
-          <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600, whiteSpace: 'nowrap' }}>👤 본인 이름</span>
-          <input type="text" value={data.superviseeName || ''} onChange={e => update({ superviseeName: e.target.value })}
+          <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600, whiteSpace: 'nowrap' }}>👤 슈퍼바이지 이름</span>
+          <input type="text" value={data.name || ''} onChange={e => update({ name: e.target.value })}
                  style={{ ...inputStyle, padding: '7px 10px', fontSize: 13 }} placeholder="자격 준비자" />
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 200px' }}>
@@ -1407,7 +1623,9 @@ const inputStyle = {
 // ============================================
 // 📋 FIELDWORK LOG
 // ============================================
-function FieldworkLog({ data, exam, update }) {
+function FieldworkLog({ activeSupervisee, exam, updateActive }) {
+  const data = activeSupervisee;
+  const update = updateActive;
   const [sortBy, setSortBy] = useState('desc');
   const [recentlyAddedId, setRecentlyAddedId] = useState(null);
   const [quickMode, setQuickMode] = useState(false);
@@ -1469,7 +1687,7 @@ function FieldworkLog({ data, exam, update }) {
       startTime: quickLog.startTime || '',
       endTime: quickLog.endTime || '',
       direct: quickLog.direct || '',
-      activities: lastLog?.activities ? [...lastLog.activities] : [],
+      activities: [], // 빠른 입력 시 활동은 빈 배열 (사용자가 카드 펼쳐 추가)
       customActivities: []
     };
     update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
@@ -1492,7 +1710,7 @@ function FieldworkLog({ data, exam, update }) {
     sortedLogs.forEach(log => {
       const ym = (log.date || '').substring(0, 7) || '미입력';
       if (!groups[ym]) {
-        groups[ym] = { ym, logs: [], fw: 0, direct: 0, indirect: 0, sv: 0 };
+        groups[ym] = { ym, logs: [], fw: 0, direct: 0, indirect: 0, sv: 0, svGroup: 0, svIndividual: 0, svAccepted: 0 };
       }
       const hrs = timeToHours(log.startTime, log.endTime);
       const direct = Math.min(Number(log.direct) || 0, hrs);
@@ -1501,12 +1719,19 @@ function FieldworkLog({ data, exam, update }) {
       groups[ym].direct += direct;
       groups[ym].indirect += Math.max(0, hrs - direct);
     });
-    // 슈퍼비전 시간도 월별 매핑 (5% 충족 표시용)
+    // 슈퍼비전 시간도 월별 매핑 (5% 충족 표시용, 인정 시간 계산)
     data.supervisionLogs.forEach(log => {
       const ym = (log.date || '').substring(0, 7);
       if (groups[ym]) {
-        groups[ym].sv += Number(log.hours) || 0;
+        const h = Number(log.hours) || 0;
+        groups[ym].sv += h;
+        if (log.type === 'group') groups[ym].svGroup += h;
+        else groups[ym].svIndividual += h;
       }
+    });
+    // 그룹별 인정 시간 계산
+    Object.values(groups).forEach(g => {
+      g.svAccepted = g.svIndividual + Math.min(g.svGroup, g.svIndividual);
     });
     return Object.values(groups).sort((a, b) => sortBy === 'desc' ? b.ym.localeCompare(a.ym) : a.ym.localeCompare(b.ym));
   }, [sortedLogs, data.supervisionLogs, sortBy]);
@@ -1586,9 +1811,11 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
     if (hasRecent) setOpen(true);
   }, [hasRecent]);
 
-  // 5% 충족 여부
+  // 5% 충족 여부 (인정 시간 기준)
   const need = group.fw * (exam.svPercent / 100);
-  const diff = group.sv - need;
+  const svAccepted = group.svAccepted !== undefined ? group.svAccepted : group.sv;
+  const diff = svAccepted - need;
+  const groupExcluded = group.svGroup > group.svIndividual ? (group.svGroup - group.svIndividual) : 0;
   let statusBadge;
   if (group.fw === 0) {
     statusBadge = null;
@@ -1597,6 +1824,12 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
   } else {
     statusBadge = <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFF4D6', color: C.warnYellow }}>⚠ 슈퍼비전 {fmt(-diff)}hr 부족</span>;
   }
+  // 그룹 초과 배지 (그달에 그룹이 개별보다 많으면)
+  const groupExcessBadge = groupExcluded > 0 ? (
+    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFE5E5', color: C.dangerRed }}>
+      ⚠ 그룹 {fmt(groupExcluded)}hr 초과
+    </span>
+  ) : null;
 
   // ym 표시 (예: 2026-06 → 2026년 6월)
   const ymDisplay = group.ym === '미입력' ? '날짜 미입력' : (() => {
@@ -1627,6 +1860,7 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
             {group.logs.length}회기 · <strong style={{ color: C.pinkDeep }}>{fmt(group.fw)}hr</strong>
           </span>
           {statusBadge}
+          {groupExcessBadge}
         </div>
         <span style={{
           fontSize: 14, color: C.grayText,
@@ -1640,7 +1874,6 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
             <FieldworkItem
               key={log.id}
               log={log}
-              exam={exam}
               onUpdate={c => onUpdate(log.id, c)}
               onDelete={() => onDelete(log.id)}
               defaultExpanded={log.id === recentlyAddedId}
@@ -1820,15 +2053,7 @@ function TimeRangePicker({ startTime, endTime, onChange }) {
     { label: '+4시간', value: 4 }
   ];
 
-  // 한글 시간 표시 함수
-  const formatKr = (t) => {
-    if (!t) return '';
-    const [h, m] = t.split(':').map(Number);
-    const period = h < 12 ? '오전' : '오후';
-    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
-  };
-
+  // 한글 시간 표시 함수 (드롭다운 옵션용)
   const renderOption = (t) => {
     const [h, m] = t.split(':').map(Number);
     const period = h < 12 ? '오전' : '오후';
@@ -1891,7 +2116,7 @@ function TimeRangePicker({ startTime, endTime, onChange }) {
   );
 }
 
-function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
+function FieldworkItem({ log, onUpdate, onDelete, defaultExpanded }) {
   const ft = timeToHours(log.startTime, log.endTime);
   const rawDirect = Number(log.direct) || 0;
   const directOver = rawDirect > ft && ft > 0;
@@ -2115,7 +2340,9 @@ function CustomActivityInput({ customActivities, onChange }) {
 // ============================================
 // 🎓 SUPERVISION LOG
 // ============================================
-function SupervisionLog({ data, update }) {
+function SupervisionLog({ activeSupervisee, updateActive }) {
+  const data = activeSupervisee;
+  const update = updateActive;
   const [sortBy, setSortBy] = useState('desc');
   const [recentlyAddedId, setRecentlyAddedId] = useState(null);
   const [quickMode, setQuickMode] = useState(false);
@@ -2182,16 +2409,19 @@ function SupervisionLog({ data, update }) {
     });
   }, [data.supervisionLogs, sortBy]);
 
-  // 월별로 그룹화
+  // 월별로 그룹화 (그룹/개별 분리 포함)
   const groupedByMonth = useMemo(() => {
     const groups = {};
     sortedLogs.forEach(log => {
       const ym = (log.date || '').substring(0, 7) || '미입력';
       if (!groups[ym]) {
-        groups[ym] = { ym, logs: [], total: 0 };
+        groups[ym] = { ym, logs: [], total: 0, groupTotal: 0, individualTotal: 0 };
       }
+      const h = Number(log.hours) || 0;
       groups[ym].logs.push(log);
-      groups[ym].total += Number(log.hours) || 0;
+      groups[ym].total += h;
+      if (log.type === 'group') groups[ym].groupTotal += h;
+      else groups[ym].individualTotal += h;
     });
     return Object.values(groups).sort((a, b) => sortBy === 'desc' ? b.ym.localeCompare(a.ym) : a.ym.localeCompare(b.ym));
   }, [sortedLogs, sortBy]);
@@ -2199,8 +2429,8 @@ function SupervisionLog({ data, update }) {
   return (
     <div>
       <InfoBanner>
-        💡 <strong>슈퍼비전 기록 방법</strong>: 받은 시간을 버튼으로 선택하거나 직접 입력하세요.<br/>
-        QABA 공식 규정상 <strong>매월 필드워크 시간의 5%</strong>를 슈퍼비전 받아야 합니다.
+        💡 <strong>슈퍼비전 기록 방법</strong>: 받은 시간을 버튼으로 선택하고, <strong>👤 개별 / 👥 그룹</strong>을 구분하여 입력하세요.<br/>
+        QABA 규정상 <strong>매월 필드워크 시간의 5%</strong>를 슈퍼비전 받아야 하며, <strong>그룹 슈퍼비전은 전체의 50%까지만</strong> 인정됩니다.
       </InfoBanner>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
@@ -2295,6 +2525,17 @@ function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete }) {
           <span style={{ fontSize: 12, color: C.grayText }}>
             {group.logs.length}회 · <strong style={{ color: C.plumDark }}>{fmt(group.total)}hr</strong>
           </span>
+          {group.total > 0 && (
+            <span style={{ fontSize: 11, color: C.grayText, display: 'flex', gap: 6 }}>
+              <span style={{ color: C.goldDeep, fontWeight: 600 }}>개별 {fmt(group.individualTotal)}</span>
+              <span style={{ color: C.plumDark, fontWeight: 600 }}>그룹 {fmt(group.groupTotal)}</span>
+            </span>
+          )}
+          {group.groupTotal > group.individualTotal && (
+            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFE5E5', color: C.dangerRed }}>
+              ⚠ 그룹 {fmt(group.groupTotal - group.individualTotal)}hr 초과
+            </span>
+          )}
         </div>
         <span style={{
           fontSize: 14, color: C.grayText,
@@ -2506,7 +2747,7 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
               </button>
             </div>
             <p style={{ margin: '6px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
-              💡 QABA 규정: 그룹 슈퍼비전은 총 슈퍼비전의 50%까지만 인정됩니다
+              💡 QABA 규정: 그룹 슈퍼비전은 <strong>그 달의 개별 시간만큼만 인정</strong>됩니다 (전체의 50%까지)
             </p>
           </div>
 
@@ -2613,11 +2854,19 @@ function ExamInfoTab({ currentExam }) {
       <CollapsibleSection title="❓ 자주 묻는 질문 (FAQ)">
         <FAQItem
           q="필드워크 시간을 슈퍼바이저에게 어떻게 보고하나요?"
-          a="이 시스템의 '슈퍼바이저별' 탭에서 누적 시간을 확인하고, 필요시 백업(JSON)을 전달하세요. 슈퍼바이저는 QABA 온라인 시스템에서 본인이 직접 인증해야 합니다."
+          a="대시보드 하단의 '슈퍼바이저별' 요약(슈퍼바이저 2명 이상일 때 자동 표시)에서 누적 시간을 확인할 수 있고, 우측 상단 '📊 엑셀 내보내기'로 QABA 제출용 보고서를 받을 수 있습니다. 필요시 백업(JSON)도 함께 전달하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다."
         />
         <FAQItem
           q="슈퍼비전 5%는 매월마다 채워야 하나요?"
           a="네, QABA 공식 규정상 슈퍼비전은 매월 단위로 5%를 충족해야 합니다. 이미 지난 달의 부족분은 다음 달에 보충하기 어려울 수 있으니, 미리 슈퍼바이저와 일정을 잡는 것이 좋습니다."
+        />
+        <FAQItem
+          q="개별 슈퍼비전과 그룹 슈퍼비전의 차이는?"
+          a={`개별 슈퍼비전은 슈퍼바이저와 1:1로 진행하는 것이고, 그룹 슈퍼비전은 여러 슈퍼바이지가 한 슈퍼바이저로부터 동시에 받는 것입니다.
+
+QABA 규정상 그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정됩니다(전체의 50%까지). 예를 들어 6월에 개별 1시간 + 그룹 3시간을 받으면, 그 달의 인정 시간은 1+1=2시간이고 그룹 2시간은 초과로 인정되지 않습니다. 
+
+개별 시간은 한도 없이 100% 인정되므로, 개별 슈퍼비전을 충분히 받는 것이 중요합니다.`}
         />
         <FAQItem
           q="QASP-S에서 '슈퍼바이저 역할 600시간'이란 무엇인가요?"
@@ -2816,6 +3065,380 @@ const addBtnStyle = { padding: '10px 20px', fontSize: 14, fontWeight: 600, color
 const delBtnStyle = { padding: '8px 12px', background: '#FFF0F0', border: '1px solid #FFD0D0', color: C.dangerRed, borderRadius: 6, cursor: 'pointer', fontSize: 16 };
 
 // ============================================
+// 빈 상태 - 슈퍼바이지 없을 때
+// ============================================
+function EmptyStateNoSupervisee({ onAdd }) {
+  return (
+    <div style={{
+      background: `linear-gradient(135deg, ${C.pinkSoft} 0%, ${C.pinkPale} 100%)`,
+      border: `2px dashed ${C.pinkLight}`,
+      borderRadius: 16,
+      padding: 60,
+      textAlign: 'center'
+    }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>👤</div>
+      <h2 style={{ margin: '0 0 12px 0', color: C.pinkDeep, fontSize: 22, fontWeight: 700 }}>
+        시작하려면 슈퍼바이지를 추가하세요
+      </h2>
+      <p style={{ margin: '0 0 24px 0', fontSize: 14, color: C.plumDark, lineHeight: 1.7, maxWidth: 480, marginLeft: 'auto', marginRight: 'auto' }}>
+        본인이 자격 준비자라면 본인 이름을, 슈퍼바이저라면 슈퍼비전하는 자격 준비자(들)을 추가할 수 있어요.
+        <br/>한 계정에서 여러 슈퍼바이지를 관리할 수 있습니다.
+      </p>
+      <button onClick={onAdd}
+              style={{ padding: '14px 28px', fontSize: 15, fontWeight: 700, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(216,136,150,0.3)' }}>
+        + 첫 슈퍼바이지 추가
+      </button>
+    </div>
+  );
+}
+
+// ============================================
+// 슈퍼바이지 관리 모달 (추가/삭제/이름변경/시험변경)
+// ============================================
+function ManageSuperviseesModal({ supervisees, activeId, onAdd, onRemove, onRename, onChangeExam, onSelect, onClose }) {
+  const [newName, setNewName] = useState('');
+  const [newExam, setNewExam] = useState('QASP-S');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const handleAdd = () => {
+    const name = newName.trim();
+    if (!name) {
+      window.alert('이름을 입력하세요');
+      return;
+    }
+    if (supervisees.some(s => s.name === name)) {
+      if (!window.confirm(`'${name}' 이름의 슈퍼바이지가 이미 있어요. 그래도 추가할까요?`)) return;
+    }
+    const id = onAdd(name, newExam);
+    setNewName('');
+    // 새로 추가한 슈퍼바이지로 자동 전환
+    if (id) onSelect(id);
+  };
+
+  const handleRemove = (id, name) => {
+    const sv = supervisees.find(s => s.id === id);
+    const hasData = sv && ((sv.fieldworkLogs || []).length > 0 || (sv.supervisionLogs || []).length > 0);
+    const msg = hasData
+      ? `'${name}'의 모든 필드워크·슈퍼비전 기록이 영구 삭제됩니다.\n\n정말 삭제하시겠어요?`
+      : `'${name}' 슈퍼바이지를 삭제할까요?`;
+    if (window.confirm(msg)) {
+      onRemove(id);
+    }
+  };
+
+  const startEdit = (sv) => {
+    setEditingId(sv.id);
+    setEditName(sv.name);
+  };
+
+  const saveEdit = () => {
+    if (editingId && editName.trim()) {
+      onRename(editingId, editName);
+      setEditingId(null);
+      setEditName('');
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.white, borderRadius: 12, maxWidth: 600, maxHeight: '85vh', width: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '20px 24px', borderBottom: `1px solid ${C.pinkLight}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, color: C.pinkDeep, fontSize: 20 }}>👥 슈퍼바이지 관리</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, color: C.grayText, cursor: 'pointer', padding: '4px 8px' }}>✕</button>
+        </div>
+        <div style={{ padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* 새 슈퍼바이지 추가 */}
+          <div style={{ padding: 14, background: C.pinkPale, borderRadius: 10, border: `1px dashed ${C.pinkLight}` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.plumDark, marginBottom: 8 }}>➕ 새 슈퍼바이지 추가</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                placeholder="이름 입력 후 Enter"
+                style={{ flex: '1 1 180px', padding: '8px 12px', fontSize: 13, border: '1px solid #E0D5D8', borderRadius: 6, background: C.inputBg, fontFamily: 'inherit', outline: 'none' }}
+              />
+              <select value={newExam} onChange={e => setNewExam(e.target.value)}
+                      style={{ padding: '8px 12px', fontSize: 13, border: '1px solid #E0D5D8', borderRadius: 6, background: C.white, color: C.plumDark, cursor: 'pointer' }}>
+                <option value="QBA">QBA</option>
+                <option value="QASP-S">QASP-S</option>
+              </select>
+              <button onClick={handleAdd}
+                      style={{ padding: '8px 16px', background: C.pinkDeep, color: C.white, border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                + 추가
+              </button>
+            </div>
+          </div>
+
+          {/* 현재 슈퍼바이지 목록 */}
+          {supervisees.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: C.grayText, fontSize: 13 }}>
+              아직 추가된 슈퍼바이지가 없어요. 위에서 추가해보세요.
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.plumDark, marginBottom: 8 }}>
+                현재 슈퍼바이지 ({supervisees.length}명)
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {supervisees.map(sv => {
+                  const isActive = sv.id === activeId;
+                  const fwCount = (sv.fieldworkLogs || []).length;
+                  const svCount = (sv.supervisionLogs || []).length;
+                  const isEditing = editingId === sv.id;
+                  return (
+                    <div key={sv.id} style={{
+                      padding: 12,
+                      background: isActive ? C.pinkSoft : C.white,
+                      border: `1.5px solid ${isActive ? C.pinkDeep : C.pinkLight}`,
+                      borderRadius: 10,
+                      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'
+                    }}>
+                      {isEditing ? (
+                        <>
+                          <input
+                            type="text" value={editName} onChange={e => setEditName(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && saveEdit()}
+                            autoFocus
+                            style={{ flex: '1 1 150px', padding: '6px 10px', fontSize: 13, border: '1px solid #E0D5D8', borderRadius: 5, background: C.inputBg, fontFamily: 'inherit', outline: 'none' }}
+                          />
+                          <button onClick={saveEdit}
+                                  style={{ padding: '6px 12px', background: C.goodGreen, color: C.white, border: 'none', borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>저장</button>
+                          <button onClick={() => setEditingId(null)}
+                                  style={{ padding: '6px 12px', background: C.white, color: C.grayText, border: '1px solid #E0D5D8', borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>취소</button>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ flex: 1, minWidth: 100 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark }}>
+                              👤 {sv.name}
+                              {isActive && <span style={{ fontSize: 10, marginLeft: 6, padding: '2px 6px', background: C.pinkDeep, color: C.white, borderRadius: 8 }}>활성</span>}
+                            </div>
+                            <div style={{ fontSize: 11, color: C.grayText, marginTop: 2 }}>
+                              <select value={sv.examType} onChange={e => onChangeExam(sv.id, e.target.value)}
+                                      style={{ padding: '2px 6px', fontSize: 11, border: '1px solid #E0D5D8', borderRadius: 4, background: C.white, color: C.plumDark, cursor: 'pointer', marginRight: 6 }}>
+                                <option value="QBA">QBA</option>
+                                <option value="QASP-S">QASP-S</option>
+                              </select>
+                              · 필드워크 {fwCount}건 · 슈퍼비전 {svCount}건
+                            </div>
+                          </div>
+                          {!isActive && (
+                            <button onClick={() => onSelect(sv.id)}
+                                    style={{ padding: '6px 12px', background: C.pinkSoft, color: C.plumDark, border: `1px solid ${C.pinkLight}`, borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                              전환
+                            </button>
+                          )}
+                          <button onClick={() => startEdit(sv)} title="이름 변경"
+                                  style={{ padding: '6px 10px', background: C.white, color: C.plumDark, border: '1px solid #E0D5D8', borderRadius: 5, fontSize: 12, cursor: 'pointer' }}>
+                            ✏️
+                          </button>
+                          <button onClick={() => handleRemove(sv.id, sv.name)} title="삭제"
+                                  style={{ padding: '6px 10px', background: '#FFF0F0', color: C.dangerRed, border: '1px solid #FFD0D0', borderRadius: 5, fontSize: 12, cursor: 'pointer' }}>
+                            🗑
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ padding: 12, background: '#FFF8E7', border: `1px solid ${C.pinkGold}`, borderRadius: 8, fontSize: 12, color: '#7A5538', lineHeight: 1.6 }}>
+            💡 <strong>슈퍼바이저 모드</strong>: 한 슈퍼바이저가 여러 자격 준비자를 동시에 관리할 수 있어요. 
+            상단 드롭다운으로 슈퍼바이지를 전환하면, 각자의 필드워크·슈퍼비전 기록을 따로 관리합니다.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// 전체 슈퍼바이지 현황 (overview 탭)
+// ============================================
+function OverviewTab({ supervisees, onSelect }) {
+  // 각 슈퍼바이지 통계 계산
+  const summaries = useMemo(() => {
+    return supervisees.map(sv => {
+      const exam = EXAM_DATA[sv.examType] || EXAM_DATA['QASP-S'];
+      let fwTotal = 0, directTotal = 0, indirectTotal = 0;
+      (sv.fieldworkLogs || []).forEach(l => {
+        const hrs = timeToHours(l.startTime, l.endTime);
+        const direct = Math.min(Number(l.direct) || 0, hrs);
+        fwTotal += hrs;
+        directTotal += direct;
+        indirectTotal += Math.max(0, hrs - direct);
+      });
+
+      // 월별 인정 시간
+      const monthMap = {};
+      (sv.fieldworkLogs || []).forEach(l => {
+        if (!l.date) return;
+        const ym = l.date.substring(0, 7);
+        const hrs = timeToHours(l.startTime, l.endTime);
+        if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, svGroup: 0, svIndividual: 0, svAccepted: 0 };
+        monthMap[ym].fw += hrs;
+      });
+      (sv.supervisionLogs || []).forEach(l => {
+        if (!l.date) return;
+        const ym = l.date.substring(0, 7);
+        if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, svGroup: 0, svIndividual: 0, svAccepted: 0 };
+        const h = Number(l.hours) || 0;
+        if (l.type === 'group') monthMap[ym].svGroup += h;
+        else monthMap[ym].svIndividual += h;
+      });
+      Object.values(monthMap).forEach(m => {
+        m.svAccepted = m.svIndividual + Math.min(m.svGroup, m.svIndividual);
+      });
+
+      const svAccepted = Object.values(monthMap).reduce((s, m) => s + m.svAccepted, 0);
+      const svRequired = fwTotal * (exam.svPercent / 100);
+
+      // 이번 달 직전까지의 미충족 월
+      const now = new Date();
+      const thisYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const monthsShort = Object.values(monthMap).filter(m => {
+        if (m.ym >= thisYM) return false;
+        if (m.fw === 0) return false;
+        return m.svAccepted < m.fw * (exam.svPercent / 100) - 0.01;
+      }).length;
+
+      // 최근 4주 페이스
+      const fourWeeksAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
+      const recentFw = (sv.fieldworkLogs || []).reduce((s, l) => {
+        if (!l.date) return s;
+        const d = parseLocalDate(l.date);
+        if (d >= fourWeeksAgo && d <= now) return s + timeToHours(l.startTime, l.endTime);
+        return s;
+      }, 0);
+
+      return {
+        sv, exam, fwTotal, directTotal, indirectTotal,
+        svAccepted, svRequired, monthsShort, recentFw,
+        progress: exam.total > 0 ? (fwTotal / exam.total) * 100 : 0
+      };
+    }).sort((a, b) => b.progress - a.progress);
+  }, [supervisees]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>👥 전체 슈퍼바이지 현황</h2>
+        <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>
+          총 {supervisees.length}명 · 진행률 높은 순
+        </p>
+      </div>
+
+      <InfoBanner>
+        💡 각 카드의 <strong>전환</strong> 버튼이나 슈퍼바이지 이름을 누르면 해당 슈퍼바이지의 상세 대시보드로 이동합니다.
+      </InfoBanner>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+        {summaries.map(s => {
+          const svPct = s.svRequired > 0 ? (s.svAccepted / s.svRequired) * 100 : 0;
+          const hasWarning = s.monthsShort > 0 || s.recentFw === 0;
+          const isComplete = s.progress >= 100;
+          return (
+            <div key={s.sv.id} style={{
+              background: C.white,
+              borderRadius: 12,
+              padding: 18,
+              border: `2px solid ${isComplete ? C.goodGreen : hasWarning ? C.warnYellow : C.pinkLight}`,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              cursor: 'pointer',
+              transition: 'transform 0.15s, box-shadow 0.15s'
+            }}
+            onClick={() => onSelect(s.sv.id)}
+            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.08)'; }}
+            onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)'; }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.plumDark }}>👤 {s.sv.name}</div>
+                  <div style={{ fontSize: 11, color: C.grayText, marginTop: 2 }}>
+                    {s.sv.examType} · {s.sv.mainSupervisor || '슈퍼바이저 미지정'}
+                  </div>
+                </div>
+                {isComplete && <span style={{ fontSize: 18 }}>🎉</span>}
+                {hasWarning && !isComplete && <span style={{ fontSize: 18 }}>⚠️</span>}
+              </div>
+
+              {/* 필드워크 진행률 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, color: C.grayText, fontWeight: 600 }}>📋 필드워크</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.pinkDeep }}>
+                    {s.progress >= 100 ? '100%+' : `${s.progress.toFixed(1)}%`}
+                  </span>
+                </div>
+                <div style={{ height: 8, background: C.pinkSoft, borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${Math.min(100, s.progress)}%`,
+                    background: `linear-gradient(90deg, ${C.pinkDeep} 0%, ${C.pinkMid} 100%)`,
+                    borderRadius: 4, transition: 'width 0.4s'
+                  }} />
+                </div>
+                <div style={{ fontSize: 11, color: C.grayText, marginTop: 4 }}>
+                  {fmt(s.fwTotal)} / {s.exam.total} hr
+                  <span style={{ marginLeft: 8, color: C.goldDeep }}>직접 {fmt(s.directTotal)}</span>
+                  <span style={{ marginLeft: 6, color: C.goodGreen }}>간접 {fmt(s.indirectTotal)}</span>
+                </div>
+              </div>
+
+              {/* 슈퍼비전 진행률 */}
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, color: C.grayText, fontWeight: 600 }}>🎓 슈퍼비전 (인정)</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.plumDark }}>
+                    {svPct >= 100 ? '100%+' : `${svPct.toFixed(0)}%`}
+                  </span>
+                </div>
+                <div style={{ height: 6, background: C.pinkSoft, borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${Math.min(100, svPct)}%`,
+                    background: C.plumDark,
+                    borderRadius: 3, transition: 'width 0.4s'
+                  }} />
+                </div>
+                <div style={{ fontSize: 11, color: C.grayText, marginTop: 4 }}>
+                  {fmt(s.svAccepted)} / {fmt(s.svRequired)} hr
+                </div>
+              </div>
+
+              {/* 상태 배지 */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                {s.monthsShort > 0 && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', background: '#FFF4D6', color: C.warnYellow, borderRadius: 10, fontWeight: 600 }}>
+                    ⚠ 5% 미충족 {s.monthsShort}개월
+                  </span>
+                )}
+                {s.recentFw === 0 && s.fwTotal > 0 && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', background: '#FFE5E5', color: C.dangerRed, borderRadius: 10, fontWeight: 600 }}>
+                    ⏸ 최근 4주 기록 없음
+                  </span>
+                )}
+                {s.recentFw > 0 && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', background: '#E8F5E9', color: C.goodGreen, borderRadius: 10, fontWeight: 600 }}>
+                    📈 최근 4주 {fmt(s.recentFw)}hr
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================
 // 📖 GUIDE MODAL
 // ============================================
 function GuideModal({ onClose }) {
@@ -2827,10 +3450,19 @@ function GuideModal({ onClose }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, color: C.grayText, cursor: 'pointer', padding: '4px 8px' }}>✕</button>
         </div>
         <div style={{ padding: 24, overflowY: 'auto', lineHeight: 1.7, color: C.grayHead }}>
+          <h3 style={{ color: C.plumDark }}>👥 슈퍼바이지 관리</h3>
+          <p>이 시스템은 <strong>한 슈퍼바이저가 여러 자격 준비자(슈퍼바이지)를 관리</strong>할 수 있어요.</p>
+          <ul>
+            <li><strong>본인이 자격 준비자라면</strong>: 본인 이름으로 슈퍼바이지 1명만 추가하고 시작</li>
+            <li><strong>슈퍼바이저(BCBA·BCaBA)라면</strong>: 슈퍼비전하는 자격 준비자들을 각각 추가</li>
+            <li>상단 드롭다운으로 슈퍼바이지 전환 · <strong>👥 버튼</strong>으로 추가·삭제·이름 변경</li>
+            <li>2명 이상이면 <strong>👥 전체 현황</strong> 탭에서 모두 한눈에 비교</li>
+          </ul>
+
           <h3 style={{ color: C.plumDark }}>📌 시작하기</h3>
           <ol>
-            <li>상단 우측에서 응시할 시험 선택 (QBA 또는 QASP-S)</li>
-            <li>대시보드 상단 사용자 정보 입력 (이름·슈퍼바이저)</li>
+            <li><strong>+ 첫 슈퍼바이지 추가</strong> 버튼으로 슈퍼바이지 등록 (이름 + 시험 종류)</li>
+            <li>대시보드 상단 사용자 정보 입력 (메인 슈퍼바이저 이름)</li>
             <li>"필드워크" 탭에서 매 회기마다 입력</li>
             <li>"슈퍼비전" 탭에서 슈퍼비전 받은 날마다 입력</li>
             <li>대시보드에서 진행률·페이스·5% 충족도 확인</li>
@@ -2846,6 +3478,15 @@ function GuideModal({ onClose }) {
           <p>매월 제공한 서비스 시간의 <strong>5%</strong>를 슈퍼비전 받아야 합니다.<br/>
           예: 한 달에 100시간 일했다면 5시간 슈퍼비전 필요.</p>
 
+          <h3 style={{ color: C.plumDark }}>👤 개별 vs 👥 그룹 슈퍼비전</h3>
+          <p>
+          <strong>개별 (Individual)</strong>: 1:1 슈퍼비전, 한도 없이 다 인정<br/>
+          <strong>그룹 (Group)</strong>: 여러 명이 함께 받는 슈퍼비전, <strong>전체의 50%까지만 인정</strong> (월별 단위)<br/>
+          → 그룹 시간이 개별 시간보다 많으면 초과분은 인정 안 됨</p>
+          <p style={{ fontSize: 12, fontStyle: 'italic', color: C.grayText }}>
+          예) 6월에 개별 1hr + 그룹 3hr → 인정 시간은 1+1=2hr (그룹 2hr 초과)
+          </p>
+
           <h3 style={{ color: C.plumDark }}>📍 Direct vs Indirect</h3>
           <p><strong>Direct (직접)</strong>: 클라이언트와 직접 만나는 시간 (직접 회기, 평가, 부모교육 등)<br/>
           <strong>Indirect (간접)</strong>: 분석·계획·보고서·자료제작 등 사무 시간<br/>
@@ -2853,8 +3494,10 @@ function GuideModal({ onClose }) {
 
           <h3 style={{ color: C.plumDark }}>📊 대시보드 보는 법</h3>
           <ul>
-            <li><strong>한눈에 보기</strong>: 큰 진행률 바 2개 (필드워크·슈퍼비전)</li>
+            <li><strong>한눈에 보기</strong>: 큰 진행률 바 2개 (필드워크·슈퍼비전, 인정 시간 기준)</li>
             <li><strong>월별 5% 미충족 알림</strong>: 지난 달 슈퍼비전이 부족하면 자동 표시</li>
+            <li><strong>📅 월별 요약 표</strong>: 매월 필드워크·SV(개별/그룹/인정)·5% 충족 여부 한눈에</li>
+            <li><strong>📂 슈퍼바이저별</strong>: 2명 이상일 때만 표시 (1명이면 의미 없음)</li>
             <li><strong>최근 페이스</strong>: 최근 4주 데이터로 예상 완료일 계산</li>
           </ul>
 
