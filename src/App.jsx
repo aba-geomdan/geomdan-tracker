@@ -72,7 +72,7 @@ const migrateData = (raw) => {
     });
   }
 
-  // 슈퍼비전: group/individual → hours (합산)
+  // 슈퍼비전: group/individual → hours (합산) + type 필드 추가
   if (Array.isArray(d.supervisionLogs)) {
     d.supervisionLogs = d.supervisionLogs.map(log => {
       const out = { ...log };
@@ -80,8 +80,15 @@ const migrateData = (raw) => {
         const g = Number(out.group) || 0;
         const i = Number(out.individual) || 0;
         out.hours = g + i;
+        // type 분기: group이 더 많으면 group, 아니면 individual
+        out.type = g > i ? 'group' : 'individual';
         delete out.group;
         delete out.individual;
+        migrated = true;
+      }
+      // type 없으면 individual로 기본값 (기존 데이터)
+      if (!out.type) {
+        out.type = 'individual';
         migrated = true;
       }
       return out;
@@ -298,12 +305,25 @@ export default function App() {
       Math.round(svRequired * 10) / 10,
       svRequired > 0 ? `${((stats.svTotal / svRequired) * 100).toFixed(1)}%` : '-'
     ]);
+    svSheet.push([
+      'Individual (개별)',
+      Math.round(stats.svIndividual * 10) / 10,
+      '-',
+      stats.svTotal > 0 ? `${(100 - stats.svGroupPct).toFixed(1)}%` : '-'
+    ]);
+    svSheet.push([
+      'Group (그룹)',
+      Math.round(stats.svGroup * 10) / 10,
+      `최대 ${(stats.svTotal * 0.5).toFixed(1)} (50%)`,
+      stats.svTotal > 0 ? `${stats.svGroupPct.toFixed(1)}%${stats.svGroupOver ? ' ⚠ 초과!' : ''}` : '-'
+    ]);
     svSheet.push([]);
-    svSheet.push(['ℹ️ QABA 규정 안내: 매월 필드워크 시간의 5% 슈퍼비전 필수 · 그룹 최대 50%']);
+    svSheet.push(['ℹ️ QABA 규정 안내: 매월 필드워크 시간의 5% 슈퍼비전 필수 · 그룹 슈퍼비전은 전체의 50%까지만 인정']);
     svSheet.push([]);
 
     svSheet.push([
       'Date (날짜)',
+      'Type (유형)',
       'Supervisor (슈퍼바이저)',
       'Hours (시간)',
       'Notes (메모)'
@@ -313,6 +333,7 @@ export default function App() {
     sortedSv.forEach(log => {
       svSheet.push([
         log.date || '',
+        log.type === 'group' ? '👥 그룹' : '👤 개별',
         log.supervisor || '',
         Number(log.hours) || '',
         log.notes || ''
@@ -320,21 +341,21 @@ export default function App() {
     });
 
     if (sortedSv.length === 0) {
-      svSheet.push(['', '', '', '(아직 입력된 슈퍼비전이 없습니다)']);
+      svSheet.push(['', '', '', '', '(아직 입력된 슈퍼비전이 없습니다)']);
     }
 
     const ws2 = XLSX.utils.aoa_to_sheet(svSheet);
     // Supervision Log 5개 컬럼
     ws2['!cols'] = [
       { wch: 14, customWidth: true }, // A: Date
-      { wch: 26, customWidth: true }, // B: Supervisor (슈퍼바이저)
-      { wch: 16, customWidth: true }, // C: Hours (시간)
-      { wch: 65, customWidth: true }, // D: Notes (메모)
-      { wch: 18, customWidth: true }  // E: (헤더 영역)
+      { wch: 14, customWidth: true }, // B: Type
+      { wch: 22, customWidth: true }, // C: Supervisor
+      { wch: 16, customWidth: true }, // D: Hours
+      { wch: 60, customWidth: true }  // E: Notes
     ];
     ws2['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
-      { s: { r: 7, c: 0 }, e: { r: 7, c: 3 } }
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
+      { s: { r: 9, c: 0 }, e: { r: 9, c: 4 } }
     ];
     XLSX.utils.book_append_sheet(wb, ws2, 'Supervision Log');
 
@@ -345,7 +366,7 @@ export default function App() {
       const hrs = timeToHours(l.startTime, l.endTime);
       const direct = Math.min(Number(l.direct) || 0, hrs);
       const indirect = Math.max(0, hrs - direct);
-      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
+      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
       bsMap[l.supervisor].fw += hrs;
       bsMap[l.supervisor].direct += direct;
       bsMap[l.supervisor].indirect += indirect;
@@ -353,8 +374,11 @@ export default function App() {
     });
     data.supervisionLogs.forEach(l => {
       if (!l.supervisor) return;
-      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
-      bsMap[l.supervisor].sv += Number(l.hours) || 0;
+      if (!bsMap[l.supervisor]) bsMap[l.supervisor] = { fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0, fwCount: 0, svCount: 0 };
+      const h = Number(l.hours) || 0;
+      bsMap[l.supervisor].sv += h;
+      if (l.type === 'group') bsMap[l.supervisor].svGroup += h;
+      else bsMap[l.supervisor].svIndividual += h;
       bsMap[l.supervisor].svCount += 1;
     });
 
@@ -368,7 +392,9 @@ export default function App() {
       'Fieldwork (필드워크)',
       'Direct (직접)',
       'Indirect (간접)',
-      'Supervision (슈퍼비전)',
+      'SV 개별',
+      'SV 그룹',
+      'SV 합계',
       'Total (총)',
       'FW 회기수',
       'SV 회기수'
@@ -381,6 +407,8 @@ export default function App() {
         Math.round(s.fw * 10) / 10,
         Math.round(s.direct * 10) / 10,
         Math.round(s.indirect * 10) / 10,
+        Math.round(s.svIndividual * 10) / 10,
+        Math.round(s.svGroup * 10) / 10,
         Math.round(s.sv * 10) / 10,
         Math.round((s.fw + s.sv) * 10) / 10,
         s.fwCount,
@@ -389,22 +417,24 @@ export default function App() {
     });
 
     if (supList.length === 0) {
-      bsSheet.push(['', '', '', '', '', '', '', '(슈퍼바이저별 데이터가 없습니다)']);
+      bsSheet.push(['', '', '', '', '', '', '', '', '', '(슈퍼바이저별 데이터가 없습니다)']);
     }
 
     const ws3 = XLSX.utils.aoa_to_sheet(bsSheet);
     ws3['!cols'] = [
-      { wch: 26, customWidth: true }, // A: Supervisor
-      { wch: 22, customWidth: true }, // B: Fieldwork (필드워크)
-      { wch: 16, customWidth: true }, // C: Direct (직접)
-      { wch: 18, customWidth: true }, // D: Indirect (간접)
-      { wch: 24, customWidth: true }, // E: Supervision (슈퍼비전)
-      { wch: 14, customWidth: true }, // F: Total
-      { wch: 14, customWidth: true }, // G: FW 회기수
-      { wch: 14, customWidth: true }  // H: SV 회기수
+      { wch: 22, customWidth: true }, // A: Supervisor
+      { wch: 20, customWidth: true }, // B: Fieldwork
+      { wch: 14, customWidth: true }, // C: Direct
+      { wch: 16, customWidth: true }, // D: Indirect
+      { wch: 12, customWidth: true }, // E: SV 개별
+      { wch: 12, customWidth: true }, // F: SV 그룹
+      { wch: 12, customWidth: true }, // G: SV 합계
+      { wch: 14, customWidth: true }, // H: Total
+      { wch: 14, customWidth: true }, // I: FW 회기수
+      { wch: 14, customWidth: true }  // J: SV 회기수
     ];
     ws3['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }
     ];
     XLSX.utils.book_append_sheet(wb, ws3, 'By Supervisor');
 
@@ -422,7 +452,9 @@ export default function App() {
       'Fieldwork (필드워크)',
       'Direct (직접)',
       'Indirect (간접)',
-      'Supervision (슈퍼비전)',
+      'SV 개별',
+      'SV 그룹',
+      'SV 합계',
       '5% 필요',
       '충족 여부',
       '월 한도 (20-140hr)'
@@ -440,6 +472,8 @@ export default function App() {
         Math.round(m.fw * 10) / 10,
         Math.round(m.direct * 10) / 10,
         Math.round(m.indirect * 10) / 10,
+        Math.round((m.svIndividual || 0) * 10) / 10,
+        Math.round((m.svGroup || 0) * 10) / 10,
         Math.round(m.sv * 10) / 10,
         Math.round(m.need * 10) / 10,
         fulfillment,
@@ -448,23 +482,25 @@ export default function App() {
     });
 
     if (monthlyAsc.length === 0) {
-      msSheet.push(['', '', '', '', '', '', '', '(아직 데이터가 없습니다)']);
+      msSheet.push(['', '', '', '', '', '', '', '', '', '(아직 데이터가 없습니다)']);
     }
 
     const ws4 = XLSX.utils.aoa_to_sheet(msSheet);
     ws4['!cols'] = [
-      { wch: 20, customWidth: true }, // A: Year-Month
-      { wch: 22, customWidth: true }, // B: Fieldwork (필드워크)
-      { wch: 16, customWidth: true }, // C: Direct (직접)
-      { wch: 18, customWidth: true }, // D: Indirect (간접)
-      { wch: 24, customWidth: true }, // E: Supervision (슈퍼비전)
-      { wch: 14, customWidth: true }, // F: 5% 필요
-      { wch: 22, customWidth: true }, // G: 충족 여부
-      { wch: 24, customWidth: true }  // H: 월 한도
+      { wch: 18, customWidth: true }, // A: Year-Month
+      { wch: 20, customWidth: true }, // B: Fieldwork
+      { wch: 14, customWidth: true }, // C: Direct
+      { wch: 16, customWidth: true }, // D: Indirect
+      { wch: 12, customWidth: true }, // E: SV 개별
+      { wch: 12, customWidth: true }, // F: SV 그룹
+      { wch: 14, customWidth: true }, // G: SV 합계
+      { wch: 12, customWidth: true }, // H: 5% 필요
+      { wch: 20, customWidth: true }, // I: 충족 여부
+      { wch: 22, customWidth: true }  // J: 월 한도
     ];
     ws4['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
-      { s: { r: 5, c: 0 }, e: { r: 5, c: 7 } }
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
+      { s: { r: 5, c: 0 }, e: { r: 5, c: 9 } }
     ];
     XLSX.utils.book_append_sheet(wb, ws4, 'Monthly Summary');
 
@@ -516,13 +552,24 @@ export default function App() {
       indirectTotal += indirect;
     });
 
-    // 슈퍼비전
-    const svTotal = data.supervisionLogs.reduce((s, l) => s + (Number(l.hours) || 0), 0);
+    // 슈퍼비전 (그룹/개별 분리)
+    let svTotal = 0;
+    let svGroup = 0;
+    let svIndividual = 0;
+    data.supervisionLogs.forEach(l => {
+      const h = Number(l.hours) || 0;
+      svTotal += h;
+      if (l.type === 'group') svGroup += h;
+      else svIndividual += h;
+    });
 
     // 슈퍼비전 5% 요구 (전체 필드워크 기준)
     const svRequired = fwTotal * (exam.svPercent / 100);
+    // 그룹 슈퍼비전 비율 (총 슈퍼비전 대비) - QABA 50% 한도
+    const svGroupPct = svTotal > 0 ? (svGroup / svTotal) * 100 : 0;
+    const svGroupOver = svGroupPct > 50; // 50% 초과 시 경고
 
-    // 월별 데이터
+    // 월별 데이터 (그룹/개별 분리)
     const monthMap = {};
     data.fieldworkLogs.forEach(l => {
       if (!l.date) return;
@@ -530,7 +577,7 @@ export default function App() {
       const hrs = timeToHours(l.startTime, l.endTime);
       const direct = Math.min(Number(l.direct) || 0, hrs);
       const indirect = Math.max(0, hrs - direct);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, direct: 0, indirect: 0 };
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0 };
       monthMap[ym].fw += hrs;
       monthMap[ym].direct += direct;
       monthMap[ym].indirect += indirect;
@@ -538,8 +585,11 @@ export default function App() {
     data.supervisionLogs.forEach(l => {
       if (!l.date) return;
       const ym = l.date.substring(0, 7);
-      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, direct: 0, indirect: 0 };
-      monthMap[ym].sv += Number(l.hours) || 0;
+      if (!monthMap[ym]) monthMap[ym] = { ym, fw: 0, sv: 0, svGroup: 0, svIndividual: 0, direct: 0, indirect: 0 };
+      const h = Number(l.hours) || 0;
+      monthMap[ym].sv += h;
+      if (l.type === 'group') monthMap[ym].svGroup += h;
+      else monthMap[ym].svIndividual += h;
     });
     const monthlyArr = Object.values(monthMap).sort((a, b) => a.ym.localeCompare(b.ym));
 
@@ -612,6 +662,8 @@ export default function App() {
         ym: m.ym,
         fw: m.fw,
         sv: m.sv,
+        svGroup: m.svGroup,
+        svIndividual: m.svIndividual,
         direct: m.direct,
         indirect: m.indirect,
         need: Math.round(need * 10) / 10,
@@ -622,7 +674,7 @@ export default function App() {
 
     return {
       fwTotal, directTotal, indirectTotal,
-      svTotal, svRequired,
+      svTotal, svRequired, svGroup, svIndividual, svGroupPct, svGroupOver,
       weeklyPace, remaining, estCompletion,
       monthsShort,
       monthlySummary
@@ -672,7 +724,6 @@ export default function App() {
           { id: 'dashboard', l: '📊 대시보드' },
           { id: 'fieldwork', l: '📋 필드워크' },
           { id: 'supervision', l: '🎓 슈퍼비전' },
-          { id: 'analysis', l: '📂 슈퍼바이저별' },
           { id: 'info', l: '📚 시험 정보' }
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
@@ -698,7 +749,6 @@ export default function App() {
         {tab === 'dashboard' && <Dashboard data={data} stats={stats} exam={exam} update={update} />}
         {tab === 'fieldwork' && <FieldworkLog data={data} exam={exam} update={update} />}
         {tab === 'supervision' && <SupervisionLog data={data} update={update} />}
-        {tab === 'analysis' && <BySupervisor data={data} />}
         {tab === 'info' && <ExamInfoTab currentExam={data.examType} />}
       </main>
 
@@ -885,6 +935,10 @@ function Dashboard({ data, stats, exam, update }) {
             unit="hr"
             isPercent={true}
             note={stats.fwTotal === 0 ? '필드워크 기록 추가 시 목표가 자동 설정됩니다' : null}
+            extraInfo={stats.svTotal > 0 ? [
+              { label: '👤 개별 (Individual)', value: stats.svIndividual, color: C.goldDeep, plain: true, hint: `전체의 ${(100 - stats.svGroupPct).toFixed(0)}%` },
+              { label: '👥 그룹 (Group, 최대 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ ${stats.svGroupPct.toFixed(1)}% 초과!` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
+            ] : null}
           />
         </div>
 
@@ -962,7 +1016,71 @@ function Dashboard({ data, stats, exam, update }) {
           </p>
         </Section>
       )}
+
+      {/* 슈퍼바이저별 미니 요약 - 2명 이상일 때만 */}
+      <SupervisorMiniSummary data={data} />
     </div>
+  );
+}
+
+// SupervisorMiniSummary - 슈퍼바이저 2명 이상일 때만 대시보드에 표시
+function SupervisorMiniSummary({ data }) {
+  const bySup = useMemo(() => {
+    const m = {};
+    data.fieldworkLogs.forEach(l => {
+      if (!l.supervisor) return;
+      const hrs = timeToHours(l.startTime, l.endTime);
+      if (!m[l.supervisor]) m[l.supervisor] = { supervisor: l.supervisor, fw: 0, sv: 0 };
+      m[l.supervisor].fw += hrs;
+    });
+    data.supervisionLogs.forEach(l => {
+      if (!l.supervisor) return;
+      if (!m[l.supervisor]) m[l.supervisor] = { supervisor: l.supervisor, fw: 0, sv: 0 };
+      m[l.supervisor].sv += Number(l.hours) || 0;
+    });
+    return Object.values(m).sort((a, b) => (b.fw + b.sv) - (a.fw + a.sv));
+  }, [data.fieldworkLogs, data.supervisionLogs]);
+
+  // 2명 이상일 때만 표시 (1명이면 의미 없음)
+  if (bySup.length < 2) return null;
+
+  const allTotal = bySup.reduce((s, x) => s + x.fw + x.sv, 0);
+
+  return (
+    <Section title="📂 슈퍼바이저별 (2명 이상)">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {bySup.map((s, i) => {
+          const total = s.fw + s.sv;
+          const sharePct = allTotal > 0 ? (total / allTotal) * 100 : 0;
+          return (
+            <div key={i} style={{
+              padding: 14, background: C.pinkPale, borderRadius: 10,
+              display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap'
+            }}>
+              <div style={{ minWidth: 100, fontWeight: 700, color: C.plumDark }}>
+                👤 {s.supervisor}
+              </div>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ height: 8, background: C.white, borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${sharePct}%`,
+                    background: `linear-gradient(90deg, ${C.pinkDeep} 0%, ${C.pinkMid} 100%)`,
+                    borderRadius: 4,
+                    transition: 'width 0.5s'
+                  }} />
+                </div>
+              </div>
+              <div style={{ fontSize: 13, color: C.grayText, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ color: C.pinkDeep }}><strong>{fmt(s.fw)}</strong> 필드</span>
+                <span style={{ color: C.plumDark }}><strong>{fmt(s.sv)}</strong> 슈퍼비전</span>
+                <span style={{ fontSize: 12, color: C.grayText }}>({sharePct.toFixed(0)}%)</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
   );
 }
 
@@ -1079,6 +1197,30 @@ function BigProgressBar({ icon, label, sublabel, current, target, color, bgColor
       {extraInfo && (
         <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           {extraInfo.map((info, i) => {
+            // plain 모드: 한도 바 없이 단순 표시
+            if (info.plain) {
+              return (
+                <div key={i} style={{
+                  padding: '10px 12px',
+                  background: C.pinkPale,
+                  borderRadius: 8,
+                  borderLeft: `3px solid ${info.color}`
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, color: C.grayText, fontWeight: 600 }}>{info.label}</span>
+                    {info.hint && (
+                      <span style={{ fontSize: 11, color: info.color, fontWeight: 600 }}>{info.hint}</span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                    <strong style={{ fontSize: 17, color: info.color }}>{fmt(info.value)}</strong>
+                    <span style={{ fontSize: 11, color: C.grayText }}>hr</span>
+                  </div>
+                </div>
+              );
+            }
+
+            // 기본: 한도 바 모드
             const limit = info.isMax ? info.max : info.min;
             const subPct = limit > 0 ? (info.value / limit) * 100 : 0;
             const subDisplayPct = Math.min(100, subPct);
@@ -1756,6 +1898,7 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
   const direct = directOver ? rawDirect : Math.min(rawDirect, ft);
   const indirect = Math.max(0, ft - direct);
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [customOpen, setCustomOpen] = useState(false);
 
   const selectedActivities = (log.activities && Array.isArray(log.activities))
     ? log.activities
@@ -1769,7 +1912,6 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
   };
 
   // 요약 정보
-  const dateLabel = log.date || '날짜 없음';
   const formatKrTime = (t) => {
     if (!t) return '';
     const [h, m] = t.split(':').map(Number);
@@ -1778,37 +1920,41 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
     return `${period} ${displayH}:${String(m).padStart(2, '0')}`;
   };
   const timeLabel = (log.startTime && log.endTime) ? `${formatKrTime(log.startTime)}~${formatKrTime(log.endTime)}` : '시간 미입력';
-  const totalActCount = selectedActivities.length + (log.customActivities?.length || 0);
+
+  // 요약 헤더용 날짜 - 월별 그룹 안에 있으니 일자만 표시
+  const dayOnly = (() => {
+    if (!log.date) return '날짜 미입력';
+    const parts = log.date.split('-');
+    if (parts.length === 3) {
+      return `${parseInt(parts[1])}/${parseInt(parts[2])}`;
+    }
+    return log.date;
+  })();
 
   return (
     <div style={logCardStyle}>
-      {/* 요약 헤더 (항상 보임) */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+      {/* 요약 헤더 (항상 보임) - 간결하게 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
            onClick={() => setExpanded(!expanded)}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 100 }}>
-            📅 {dateLabel}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 50 }}>
+            {dayOnly}
           </div>
-          <div style={{ fontSize: 13, color: C.grayText }}>
-            ⏰ {timeLabel} <strong style={{ color: C.pinkDeep }}>({fmt(ft)}hr)</strong>
+          <div style={{ fontSize: 12, color: C.grayText }}>
+            {timeLabel} <strong style={{ color: C.pinkDeep }}>({fmt(ft)}hr)</strong>
           </div>
           {ft > 0 && (
-            <div style={{ fontSize: 12, color: C.grayText, display: 'flex', gap: 8 }}>
+            <div style={{ fontSize: 11, color: C.grayText, display: 'flex', gap: 6 }}>
               <span style={{ color: C.goldDeep, fontWeight: 600 }}>직접 {fmt(direct)}</span>
               <span style={{ color: C.goodGreen, fontWeight: 600 }}>간접 {fmt(indirect)}</span>
             </div>
           )}
           {log.supervisor && (
-            <div style={{ fontSize: 13, color: C.grayText }}>👤 {log.supervisor}</div>
-          )}
-          {totalActCount > 0 && (
-            <div style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
-              활동 {totalActCount}개
-            </div>
+            <div style={{ fontSize: 11, color: C.grayText }}>· {log.supervisor}</div>
           )}
         </div>
         <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
-        <div style={{ fontSize: 14, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
+        <div style={{ fontSize: 13, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
       </div>
 
       {/* 상세 입력 (펼침) */}
@@ -1854,21 +2000,21 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
             </div>
           )}
 
-          {/* 활동 유형 - 한 줄 (Direct/Indirect 그룹 구분 없음) */}
+          {/* 활동 유형 - 한 줄 (작은 칩 + 기타 토글) */}
           <div style={{ marginBottom: 4 }}>
-            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 6 }}>
               활동 유형 <span style={{ fontWeight: 400, fontStyle: 'italic' }}>(선택사항 · 여러 개 가능)</span>
             </div>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
               {[...DIRECT_ACTIVITIES, ...INDIRECT_ACTIVITIES].map(activity => {
                 const isSelected = selectedActivities.includes(activity);
                 return (
                   <button key={activity} onClick={() => toggleActivity(activity)}
                     style={{
-                      padding: '6px 12px', fontSize: 13, fontWeight: 500,
-                      border: `1.5px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
-                      borderRadius: 16,
+                      padding: '4px 9px', fontSize: 11, fontWeight: 500,
+                      border: `1px solid ${isSelected ? C.pinkDeep : '#E0D5D8'}`,
+                      borderRadius: 12,
                       background: isSelected ? C.pinkDeep : C.white,
                       color: isSelected ? C.white : C.grayText,
                       cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
@@ -1877,13 +2023,33 @@ function FieldworkItem({ log, exam, onUpdate, onDelete, defaultExpanded }) {
                   </button>
                 );
               })}
+              {/* 기타 칩 - 누르면 CustomActivityInput 펼침 */}
+              {(() => {
+                const hasCustom = (log.customActivities || []).length > 0;
+                const isOpen = customOpen || hasCustom;
+                return (
+                  <button onClick={() => setCustomOpen(!isOpen)}
+                    style={{
+                      padding: '4px 9px', fontSize: 11, fontWeight: 500,
+                      border: `1px solid ${isOpen ? C.plumDark : '#E0D5D8'}`,
+                      borderRadius: 12,
+                      background: isOpen ? C.plumDark : C.white,
+                      color: isOpen ? C.white : C.grayText,
+                      cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit'
+                    }}>
+                    ✏️ 기타{hasCustom ? ` (${log.customActivities.length})` : ''}
+                  </button>
+                );
+              })()}
             </div>
 
-            {/* 사용자 추가 활동 */}
-            <CustomActivityInput
-              customActivities={log.customActivities || []}
-              onChange={(list) => onUpdate({ customActivities: list })}
-            />
+            {/* 사용자 추가 활동 - "기타" 누르거나 이미 있을 때만 펼침 */}
+            {(customOpen || (log.customActivities || []).length > 0) && (
+              <CustomActivityInput
+                customActivities={log.customActivities || []}
+                onChange={(list) => onUpdate({ customActivities: list })}
+              />
+            )}
           </div>
         </div>
       )}
@@ -1966,7 +2132,7 @@ function SupervisionLog({ data, update }) {
 
   const add = () => {
     const id = Date.now();
-    const newLog = { id, date: todayYMD(), hours: '', supervisor: data.mainSupervisor || '', notes: '' };
+    const newLog = { id, date: todayYMD(), hours: '', type: 'individual', supervisor: data.mainSupervisor || '', notes: '' };
     update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
     setRecentlyAddedId(id);
   };
@@ -1985,7 +2151,8 @@ function SupervisionLog({ data, update }) {
       ...lastLog,
       id,
       date: nextDate,
-      notes: '' // 메모는 비움 (회기마다 다름)
+      type: lastLog.type || 'individual', // 이전 type 유지
+      notes: '' // 메모는 비움
     };
     update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
     setRecentlyAddedId(id);
@@ -1997,6 +2164,7 @@ function SupervisionLog({ data, update }) {
       id,
       date: quickLog.date || todayYMD(),
       hours: quickLog.hours || '',
+      type: quickLog.type || 'individual',
       supervisor: quickLog.supervisor || data.mainSupervisor || '',
       notes: ''
     };
@@ -2156,6 +2324,7 @@ function QuickAddSvRow({ onAdd, mainSupervisor }) {
   const [date, setDate] = useState(todayYMD());
   const [supervisor, setSupervisor] = useState(mainSupervisor || '');
   const [hours, setHours] = useState('');
+  const [type, setType] = useState('individual');
 
   const presets = [0.5, 1, 1.5, 2, 3];
 
@@ -2165,8 +2334,8 @@ function QuickAddSvRow({ onAdd, mainSupervisor }) {
       window.alert('시간을 입력하세요');
       return;
     }
-    onAdd({ date, supervisor, hours: h });
-    setHours(''); // 날짜·슈퍼바이저 유지
+    onAdd({ date, supervisor, hours: h, type });
+    setHours(''); // 날짜·슈퍼바이저·type 유지
   };
 
   return (
@@ -2186,6 +2355,33 @@ function QuickAddSvRow({ onAdd, mainSupervisor }) {
                  list="supervisor-list"
                  placeholder="이름"
                  style={{ ...logInputStyle, padding: '6px 8px', fontSize: 12 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>유형</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button onClick={() => setType('individual')}
+              style={{
+                padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                border: `1.5px solid ${type === 'individual' ? C.goldDeep : '#E0D5D8'}`,
+                borderRadius: 5,
+                background: type === 'individual' ? C.goldDeep : C.white,
+                color: type === 'individual' ? C.white : C.grayText,
+                cursor: 'pointer', fontFamily: 'inherit'
+              }}>
+              👤 개별
+            </button>
+            <button onClick={() => setType('group')}
+              style={{
+                padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                border: `1.5px solid ${type === 'group' ? C.plumDark : '#E0D5D8'}`,
+                borderRadius: 5,
+                background: type === 'group' ? C.plumDark : C.white,
+                color: type === 'group' ? C.white : C.grayText,
+                cursor: 'pointer', fontFamily: 'inherit'
+              }}>
+              👥 그룹
+            </button>
+          </div>
         </div>
         <div style={{ flex: '1 1 200px' }}>
           <div style={{ fontSize: 10, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>⏱ 시간 (hr)</div>
@@ -2219,7 +2415,7 @@ function QuickAddSvRow({ onAdd, mainSupervisor }) {
         </button>
       </div>
       <p style={{ margin: '8px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
-        💡 추가하면 날짜·슈퍼바이저는 유지되고, 시간만 비워집니다
+        💡 추가하면 날짜·슈퍼바이저·유형은 유지되고, 시간만 비워집니다
       </p>
     </div>
   );
@@ -2228,20 +2424,36 @@ function QuickAddSvRow({ onAdd, mainSupervisor }) {
 function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const hrs = Number(log.hours) || 0;
+  const isGroup = log.type === 'group';
+
+  // 요약 헤더용 날짜 (월별 그룹 안이라 일자만)
+  const dayOnly = (() => {
+    if (!log.date) return '날짜 미입력';
+    const parts = log.date.split('-');
+    if (parts.length === 3) return `${parseInt(parts[1])}/${parseInt(parts[2])}`;
+    return log.date;
+  })();
 
   return (
     <div style={logCardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
            onClick={() => setExpanded(!expanded)}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 100 }}>
-            📅 {log.date || '날짜 없음'}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark, minWidth: 50 }}>
+            {dayOnly}
           </div>
-          <div style={{ fontSize: 13, color: C.grayText }}>
-            ⏱ <strong style={{ color: C.plumDark }}>{fmt(hrs)} hr</strong>
+          <div style={{ fontSize: 12, color: C.grayText }}>
+            <strong style={{ color: C.plumDark }}>{fmt(hrs)} hr</strong>
           </div>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+            background: isGroup ? '#E8E0F0' : '#FFE9AB',
+            color: isGroup ? C.plumDark : '#B8860B'
+          }}>
+            {isGroup ? '👥 그룹' : '👤 개별'}
+          </span>
           {log.supervisor && (
-            <div style={{ fontSize: 13, color: C.grayText }}>👤 {log.supervisor}</div>
+            <div style={{ fontSize: 11, color: C.grayText }}>· {log.supervisor}</div>
           )}
           {log.notes && (
             <div style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -2250,7 +2462,7 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
           )}
         </div>
         <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
-        <div style={{ fontSize: 14, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
+        <div style={{ fontSize: 13, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
       </div>
 
       {expanded && (
@@ -2262,6 +2474,40 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
             <Field label="슈퍼바이저" flex={1}>
               <input type="text" value={log.supervisor || ''} onChange={e => onUpdate({ supervisor: e.target.value })} list="supervisor-list" style={logInputStyle} placeholder="이름 입력" />
             </Field>
+          </div>
+
+          {/* 그룹/개별 선택 */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 6 }}>
+              슈퍼비전 유형
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => onUpdate({ type: 'individual' })}
+                style={{
+                  flex: 1, padding: '10px 14px', fontSize: 13, fontWeight: 600,
+                  border: `1.5px solid ${!isGroup ? C.goldDeep : '#E0D5D8'}`,
+                  borderRadius: 8,
+                  background: !isGroup ? C.goldDeep : C.white,
+                  color: !isGroup ? C.white : C.grayText,
+                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s'
+                }}>
+                {!isGroup ? '✓ ' : ''}👤 개별 (Individual)
+              </button>
+              <button onClick={() => onUpdate({ type: 'group' })}
+                style={{
+                  flex: 1, padding: '10px 14px', fontSize: 13, fontWeight: 600,
+                  border: `1.5px solid ${isGroup ? C.plumDark : '#E0D5D8'}`,
+                  borderRadius: 8,
+                  background: isGroup ? C.plumDark : C.white,
+                  color: isGroup ? C.white : C.grayText,
+                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s'
+                }}>
+                {isGroup ? '✓ ' : ''}👥 그룹 (Group)
+              </button>
+            </div>
+            <p style={{ margin: '6px 0 0 0', fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
+              💡 QABA 규정: 그룹 슈퍼비전은 총 슈퍼비전의 50%까지만 인정됩니다
+            </p>
           </div>
 
           <SvTimePicker
@@ -2281,248 +2527,6 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
   );
 }
 
-// ============================================
-// 📂 BY SUPERVISOR
-// ============================================
-function BySupervisor({ data }) {
-  const bySup = useMemo(() => {
-    const m = {};
-    data.fieldworkLogs.forEach(l => {
-      if (!l.supervisor) return;
-      const hrs = timeToHours(l.startTime, l.endTime);
-      const direct = Math.min(Number(l.direct) || 0, hrs);
-      const indirect = Math.max(0, hrs - direct);
-      if (!m[l.supervisor]) m[l.supervisor] = {
-        supervisor: l.supervisor, fieldwork: 0, supervision: 0,
-        direct: 0, indirect: 0, fwCount: 0, svCount: 0,
-        lastDate: ''
-      };
-      m[l.supervisor].fieldwork += hrs;
-      m[l.supervisor].direct += direct;
-      m[l.supervisor].indirect += indirect;
-      m[l.supervisor].fwCount += 1;
-      if (l.date && l.date > m[l.supervisor].lastDate) m[l.supervisor].lastDate = l.date;
-    });
-    data.supervisionLogs.forEach(l => {
-      if (!l.supervisor) return;
-      if (!m[l.supervisor]) m[l.supervisor] = {
-        supervisor: l.supervisor, fieldwork: 0, supervision: 0,
-        direct: 0, indirect: 0, fwCount: 0, svCount: 0,
-        lastDate: ''
-      };
-      m[l.supervisor].supervision += Number(l.hours) || 0;
-      m[l.supervisor].svCount += 1;
-      if (l.date && l.date > m[l.supervisor].lastDate) m[l.supervisor].lastDate = l.date;
-    });
-    return Object.values(m).sort((a, b) => (b.fieldwork + b.supervision) - (a.fieldwork + a.supervision));
-  }, [data.fieldworkLogs, data.supervisionLogs]);
-
-  // 전체 합계 (비율 계산용)
-  const totals = useMemo(() => {
-    const allFw = bySup.reduce((s, x) => s + x.fieldwork, 0);
-    const allSv = bySup.reduce((s, x) => s + x.supervision, 0);
-    const allTotal = allFw + allSv;
-    return { allFw, allSv, allTotal };
-  }, [bySup]);
-
-  const maxTotal = bySup.length > 0 ? Math.max(...bySup.map(s => s.fieldwork + s.supervision)) : 1;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>📂 슈퍼바이저별 현황</h2>
-        <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>
-          누구와 얼만큼 함께 일하고 있는지 한눈에 확인하세요
-        </p>
-      </div>
-
-      {bySup.length === 0 ? (
-        <EmptyState msg='슈퍼바이저별 데이터가 없습니다.' sub='필드워크나 슈퍼비전 기록에 슈퍼바이저 이름을 입력하면 자동 집계됩니다.' />
-      ) : (
-        <>
-          {/* 전체 요약 */}
-          <div style={{
-            background: `linear-gradient(135deg, ${C.pinkPale} 0%, ${C.pinkSoft} 100%)`,
-            borderRadius: 12,
-            padding: 20,
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-            gap: 16
-          }}>
-            <div>
-              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>👥 슈퍼바이저</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.plumDark }}>{bySup.length}명</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>📋 필드워크 합계</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.pinkDeep }}>{fmt(totals.allFw)} <span style={{ fontSize: 12, color: C.grayText }}>hr</span></div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>🎓 슈퍼비전 합계</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.plumDark }}>{fmt(totals.allSv)} <span style={{ fontSize: 12, color: C.grayText }}>hr</span></div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: C.grayText, fontWeight: 600, marginBottom: 4 }}>⏱ 총 시간</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.goldDeep }}>{fmt(totals.allTotal)} <span style={{ fontSize: 12, color: C.grayText }}>hr</span></div>
-            </div>
-          </div>
-
-          {/* 슈퍼바이저별 큰 카드 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {bySup.map((s, i) => (
-              <SupervisorCard
-                key={i}
-                rank={i + 1}
-                supervisor={s}
-                maxTotal={maxTotal}
-                allTotal={totals.allTotal}
-                showRank={bySup.length > 1}
-              />
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function SupervisorCard({ rank, supervisor: s, maxTotal, allTotal, showRank }) {
-  const total = s.fieldwork + s.supervision;
-  const sharePct = allTotal > 0 ? (total / allTotal) * 100 : 0;
-  const widthPct = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
-
-  // 필드워크 vs 슈퍼비전 비율
-  const fwRatio = total > 0 ? (s.fieldwork / total) * 100 : 0;
-  const svRatio = total > 0 ? (s.supervision / total) * 100 : 0;
-
-  const rankBg = rank === 1 ? '#FFE9AB' : rank === 2 ? '#E5E5E5' : rank === 3 ? '#FFD4B0' : C.pinkPale;
-  const rankColor = rank === 1 ? '#B8860B' : rank === 2 ? '#666' : rank === 3 ? '#C25700' : C.plumDark;
-
-  return (
-    <div style={{
-      background: C.white,
-      border: `2px solid ${C.pinkLight}`,
-      borderRadius: 16,
-      padding: 20
-    }}>
-      {/* 헤더: 순위 + 이름 + 전체 비중 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16, flexWrap: 'wrap' }}>
-        {showRank && (
-          <div style={{
-            width: 36, height: 36, borderRadius: '50%',
-            background: rankBg, color: rankColor,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 16, fontWeight: 800,
-            flexShrink: 0
-          }}>
-            {rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank}
-          </div>
-        )}
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.plumDark }}>👤 {s.supervisor}</div>
-          {showRank && (
-            <div style={{ fontSize: 12, color: C.grayText, marginTop: 2 }}>
-              전체 시간의 <strong style={{ color: C.pinkDeep }}>{sharePct.toFixed(1)}%</strong> 차지
-            </div>
-          )}
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.pinkDeep, letterSpacing: '-0.02em', lineHeight: 1 }}>
-            {fmt(total)}
-            <span style={{ fontSize: 13, color: C.grayText, fontWeight: 400, marginLeft: 4 }}>hr</span>
-          </div>
-          <div style={{ fontSize: 11, color: C.grayText, marginTop: 4 }}>
-            총 {s.fwCount + s.svCount}회 세션
-          </div>
-        </div>
-      </div>
-
-      {/* 비교 바 (2명 이상일 때만) */}
-      {showRank && (
-        <div style={{
-          height: 10,
-          background: C.pinkPale,
-          borderRadius: 5,
-          overflow: 'hidden',
-          marginBottom: 16
-        }}>
-          <div style={{
-            height: '100%',
-            width: `${widthPct}%`,
-            background: `linear-gradient(90deg, ${C.pinkDeep} 0%, ${C.pinkMid} 100%)`,
-            borderRadius: 5,
-            transition: 'width 0.5s'
-          }} />
-        </div>
-      )}
-
-      {/* 필드워크 vs 슈퍼비전 듀얼 바 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-        {/* 필드워크 */}
-        <div style={{
-          padding: 12,
-          background: C.pinkPale,
-          borderRadius: 10,
-          borderLeft: `3px solid ${C.pinkDeep}`
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-            <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>📋 필드워크</span>
-            <span style={{ fontSize: 11, color: C.grayText }}>{s.fwCount}회</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 6 }}>
-            <strong style={{ fontSize: 20, color: C.pinkDeep }}>{fmt(s.fieldwork)}</strong>
-            <span style={{ fontSize: 11, color: C.grayText }}>hr</span>
-          </div>
-          <div style={{ height: 6, background: C.white, borderRadius: 3, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%',
-              width: `${fwRatio}%`,
-              background: C.pinkDeep,
-              borderRadius: 3
-            }} />
-          </div>
-          {/* Direct/Indirect 미니 */}
-          {(s.direct > 0 || s.indirect > 0) && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 8, fontSize: 11 }}>
-              <span style={{ color: C.goldDeep }}>직접 {fmt(s.direct)}</span>
-              <span style={{ color: C.goodGreen }}>간접 {fmt(s.indirect)}</span>
-            </div>
-          )}
-        </div>
-
-        {/* 슈퍼비전 */}
-        <div style={{
-          padding: 12,
-          background: '#F7F0F2',
-          borderRadius: 10,
-          borderLeft: `3px solid ${C.plumDark}`
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-            <span style={{ fontSize: 12, color: C.grayText, fontWeight: 600 }}>🎓 슈퍼비전</span>
-            <span style={{ fontSize: 11, color: C.grayText }}>{s.svCount}회</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 6 }}>
-            <strong style={{ fontSize: 20, color: C.plumDark }}>{fmt(s.supervision)}</strong>
-            <span style={{ fontSize: 11, color: C.grayText }}>hr</span>
-          </div>
-          <div style={{ height: 6, background: C.white, borderRadius: 3, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%',
-              width: `${svRatio}%`,
-              background: C.plumDark,
-              borderRadius: 3
-            }} />
-          </div>
-          {s.lastDate && (
-            <div style={{ marginTop: 8, fontSize: 11, color: C.grayText }}>
-              📅 최근: {s.lastDate}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ============================================
 // 📚 EXAM INFO TAB (정확한 공식 규정)
