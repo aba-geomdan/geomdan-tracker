@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import {
+  authLogin,
+  fetchSupervisees, createSupervisee, updateSupervisee, deleteSupervisee,
+  fetchFieldworkLogs, createFieldworkLog, updateFieldworkLog, deleteFieldworkLog,
+  fetchSupervisionLogs, createSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
+  getActiveSuperviseeId, setActiveSuperviseeId
+} from './supabase';
 
 // ============================================
 // QABA 공식 규정 기준 데이터
@@ -196,86 +203,231 @@ const fmtI = n => Math.round(Number(n || 0)).toLocaleString();
 // 메인 App
 // ============================================
 export default function App() {
-  const [data, setData] = useState(loadData());
+  // 🔒 로그인된 사용자 정보 (Supabase에서 받은 user 객체)
+  const [loggedInUser, setLoggedInUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true); // 초기 인증 체크 중
+
+  // 로그인 상태 복원 (페이지 새로고침해도 유지)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('geomdan_tracker_user_data');
+      if (saved) {
+        const user = JSON.parse(saved);
+        if (user && user.id && user.user_id) {
+          setLoggedInUser(user);
+        }
+      }
+    } catch (e) {}
+    setAuthChecking(false);
+  }, []);
+
+  const isAuthenticated = !!loggedInUser;
+
+  const handleLogin = (user) => {
+    try { localStorage.setItem('geomdan_tracker_user_data', JSON.stringify(user)); } catch (e) {}
+    setLoggedInUser(user);
+  };
+
+  const handleLogout = () => {
+    if (window.confirm('로그아웃하시겠습니까? (클라우드에 저장된 데이터는 그대로 유지됩니다)')) {
+      try {
+        localStorage.removeItem('geomdan_tracker_user_data');
+        localStorage.removeItem('geomdan_tracker_user'); // 이전 토큰 정리
+        localStorage.removeItem('geomdan_tracker_auth'); // 이전 토큰 정리
+      } catch (e) {}
+      setLoggedInUser(null);
+      setSupervisees([]);
+      setActiveSuperviseeIdState(null);
+    }
+  };
+
+  // 슈퍼바이지 목록 (Supabase에서 fetch)
+  const [supervisees, setSupervisees] = useState([]);
+  const [activeSuperviseeIdState, setActiveSuperviseeIdState] = useState(null);
+  const [loading, setLoading] = useState(false);
+
   const [tab, setTab] = useState('dashboard');
   const [showGuide, setShowGuide] = useState(false);
-  const [showManageSv, setShowManageSv] = useState(false); // 슈퍼바이지 관리 모달
+  const [showManageSv, setShowManageSv] = useState(false);
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
-
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) {}
-  }, [data]);
 
   const showToast = (msg, type = 'info') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
 
+  // 로그인 시 슈퍼바이지 목록 + 각 슈퍼바이지의 로그 fetch
+  const reloadAllData = async (userId) => {
+    setLoading(true);
+    try {
+      const supList = await fetchSupervisees(userId);
+      // 각 슈퍼바이지마다 필드워크/슈퍼비전 로그 fetch
+      const enriched = await Promise.all(supList.map(async (sv) => {
+        const [fwLogs, svLogs] = await Promise.all([
+          fetchFieldworkLogs(sv.id),
+          fetchSupervisionLogs(sv.id)
+        ]);
+        return {
+          id: sv.id,
+          name: sv.name,
+          examType: sv.exam_type,
+          mainSupervisor: sv.main_supervisor || '',
+          supervisors: sv.supervisors || [],
+          startDate: sv.start_date || '',
+          fieldworkLogs: fwLogs,
+          supervisionLogs: svLogs
+        };
+      }));
+      setSupervisees(enriched);
+
+      // 활성 슈퍼바이지 ID 복원
+      const savedActive = getActiveSuperviseeId(userId);
+      const validActive = enriched.find(s => s.id === savedActive);
+      const activeId = validActive ? savedActive : (enriched[0]?.id || null);
+      setActiveSuperviseeIdState(activeId);
+      if (activeId !== savedActive) {
+        setActiveSuperviseeId(userId, activeId);
+      }
+    } catch (err) {
+      console.error('reloadAllData error:', err);
+      showToast('데이터 로딩 실패: ' + err.message, 'danger');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 로그인 후 자동 데이터 로딩
+  useEffect(() => {
+    if (loggedInUser?.id) {
+      reloadAllData(loggedInUser.id);
+    }
+  }, [loggedInUser?.id]);
+
   // 활성 슈퍼바이지 가져오기
   const activeSupervisee = useMemo(() => {
-    if (!data.supervisees || data.supervisees.length === 0) return null;
-    return data.supervisees.find(s => s.id === data.activeSuperviseeId) || data.supervisees[0];
-  }, [data.supervisees, data.activeSuperviseeId]);
+    if (!supervisees || supervisees.length === 0) return null;
+    return supervisees.find(s => s.id === activeSuperviseeIdState) || supervisees[0];
+  }, [supervisees, activeSuperviseeIdState]);
+
+  // 데이터 호환용 객체 (기존 컴포넌트가 data.supervisees 등 참조)
+  const data = useMemo(() => ({
+    mode: 'self',
+    supervisees,
+    activeSuperviseeId: activeSuperviseeIdState
+  }), [supervisees, activeSuperviseeIdState]);
 
   const exam = activeSupervisee ? EXAM_DATA[activeSupervisee.examType] : EXAM_DATA['QASP-S'];
 
-  // 전체 데이터 업데이트 (mode, activeSuperviseeId 등)
-  const update = (c) => setData(p => ({ ...p, ...c }));
-
-  // 활성 슈퍼바이지 업데이트 (필드워크/슈퍼비전 로그 등)
-  const updateActive = (c) => {
-    if (!activeSupervisee) return;
-    setData(p => ({
-      ...p,
-      supervisees: p.supervisees.map(s => s.id === activeSupervisee.id ? { ...s, ...c } : s)
-    }));
+  // 활성 슈퍼바이지 변경
+  const update = (c) => {
+    if ('activeSuperviseeId' in c) {
+      setActiveSuperviseeIdState(c.activeSuperviseeId);
+      setActiveSuperviseeId(loggedInUser?.id, c.activeSuperviseeId);
+    }
   };
 
-  // 슈퍼바이지 관리 함수
-  const addSupervisee = (name, examType = 'QASP-S') => {
-    const id = `sv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const newSv = normalizeSupervisee({
-      id, name: name.trim() || '(이름 없음)', examType,
-      mainSupervisor: '', supervisors: [], startDate: '',
-      fieldworkLogs: [], supervisionLogs: []
+  // 활성 슈퍼바이지의 필드워크/슈퍼비전 로그 갱신 (낙관적 업데이트 + Supabase 동기화)
+  const updateActive = async (c) => {
+    if (!activeSupervisee) return;
+
+    // 필드 변경 (이름/시험은 아니고 로그 변경)
+    if ('fieldworkLogs' in c || 'supervisionLogs' in c) {
+      // 로컬 즉시 반영 (낙관적 업데이트)
+      setSupervisees(prev => prev.map(s =>
+        s.id === activeSupervisee.id ? { ...s, ...c } : s
+      ));
+
+      // Supabase 동기화는 각 CRUD 헬퍼 함수가 처리
+      // 여기서는 sub-항목별 동기화가 필요한 경우 추가 작업
+      return;
+    }
+
+    // 슈퍼바이지 메타데이터 변경 (이름, 시험종류, 메인슈퍼바이저 등)
+    const dbChanges = {};
+    if ('name' in c) dbChanges.name = c.name;
+    if ('examType' in c) dbChanges.examType = c.examType;
+    if ('mainSupervisor' in c) dbChanges.mainSupervisor = c.mainSupervisor;
+    if ('supervisors' in c) dbChanges.supervisors = c.supervisors;
+    if ('startDate' in c) dbChanges.startDate = c.startDate;
+
+    if (Object.keys(dbChanges).length > 0) {
+      setSupervisees(prev => prev.map(s =>
+        s.id === activeSupervisee.id ? { ...s, ...c } : s
+      ));
+      await updateSupervisee(activeSupervisee.id, dbChanges);
+    }
+  };
+
+  // 슈퍼바이지 추가 (Supabase)
+  const addSupervisee = async (name, examType = 'QASP-S') => {
+    if (!loggedInUser?.id) return null;
+    const created = await createSupervisee(loggedInUser.id, {
+      name: name.trim() || '(이름 없음)',
+      examType
     });
-    setData(p => ({
-      ...p,
-      supervisees: [...(p.supervisees || []), newSv],
-      activeSuperviseeId: p.activeSuperviseeId || newSv.id
-    }));
+    if (!created) {
+      showToast('슈퍼바이지 추가 실패', 'danger');
+      return null;
+    }
+    const newSv = {
+      id: created.id,
+      name: created.name,
+      examType: created.exam_type,
+      mainSupervisor: created.main_supervisor || '',
+      supervisors: created.supervisors || [],
+      startDate: created.start_date || '',
+      fieldworkLogs: [],
+      supervisionLogs: []
+    };
+    setSupervisees(prev => [...prev, newSv]);
+    // 첫 슈퍼바이지면 자동 활성화
+    if (!activeSuperviseeIdState) {
+      setActiveSuperviseeIdState(newSv.id);
+      setActiveSuperviseeId(loggedInUser.id, newSv.id);
+    }
     return newSv.id;
   };
 
-  const removeSupervisee = (id) => {
-    setData(p => {
-      const filtered = p.supervisees.filter(s => s.id !== id);
-      let activeId = p.activeSuperviseeId;
-      if (activeId === id) activeId = filtered[0]?.id || null;
-      return { ...p, supervisees: filtered, activeSuperviseeId: activeId };
+  const removeSupervisee = async (id) => {
+    const ok = await deleteSupervisee(id);
+    if (!ok) {
+      showToast('삭제 실패', 'danger');
+      return;
+    }
+    setSupervisees(prev => {
+      const filtered = prev.filter(s => s.id !== id);
+      if (activeSuperviseeIdState === id) {
+        const newActive = filtered[0]?.id || null;
+        setActiveSuperviseeIdState(newActive);
+        setActiveSuperviseeId(loggedInUser?.id, newActive);
+      }
+      return filtered;
     });
   };
 
-  const renameSupervisee = (id, newName) => {
+  const renameSupervisee = async (id, newName) => {
     const trimmed = (newName || '').trim() || '(이름 없음)';
-    setData(p => ({
-      ...p,
-      supervisees: p.supervisees.map(s => s.id === id ? { ...s, name: trimmed } : s)
-    }));
+    setSupervisees(prev => prev.map(s => s.id === id ? { ...s, name: trimmed } : s));
+    await updateSupervisee(id, { name: trimmed });
   };
 
-  const changeSuperviseeExam = (id, newExamType) => {
+  const changeSuperviseeExam = async (id, newExamType) => {
     if (!EXAM_DATA[newExamType]) return;
-    setData(p => ({
-      ...p,
-      supervisees: p.supervisees.map(s => s.id === id ? { ...s, examType: newExamType } : s)
-    }));
+    setSupervisees(prev => prev.map(s => s.id === id ? { ...s, examType: newExamType } : s));
+    await updateSupervisee(id, { examType: newExamType });
   };
 
-  // 백업 다운로드
+  // 백업 다운로드 (활성 슈퍼바이지의 데이터만)
   const exportData = () => {
-    const json = JSON.stringify(data, null, 2);
+    const exportPayload = {
+      version: 'cloud-v1',
+      exportedAt: new Date().toISOString(),
+      user: { id: loggedInUser?.id, user_id: loggedInUser?.user_id, name: loggedInUser?.name },
+      supervisees: supervisees,
+      activeSuperviseeId: activeSuperviseeIdState
+    };
+    const json = JSON.stringify(exportPayload, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -406,13 +558,14 @@ export default function App() {
     svSheet.push(['시험 유형', activeSupervisee.examType, '', '보고서 작성일', today]);
     svSheet.push([]);
 
-    svSheet.push(['📊 누적 요약', '입력 시간', '인정 시간', '목표 (5%)', '달성률 (인정)']);
+    const svRequired_total = activeSupervisee.examType === 'QBA' ? 100 : 50; // 시험 총 슈퍼비전 목표 (고정)
+    svSheet.push(['📊 누적 요약', '입력 시간', '인정 시간', '시험 총 목표', '달성률 (인정)']);
     svSheet.push([
       'Total Supervision',
       Math.round(stats.svTotal * 10) / 10,
       Math.round(stats.svAccepted * 10) / 10,
-      Math.round(svRequired * 10) / 10,
-      pctStr(stats.svAccepted, svRequired)
+      svRequired_total,
+      pctStr(stats.svAccepted, svRequired_total)
     ]);
     svSheet.push([
       'Individual (개별)',
@@ -629,28 +782,87 @@ export default function App() {
     showToast('엑셀 보고서가 다운로드되었습니다', 'good');
   };
 
-  const importData = (e) => {
+  const importData = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const imported = JSON.parse(ev.target.result);
         // 신구 백업 모두 지원
-        const isMulti = Array.isArray(imported.supervisees);
+        const isCloud = imported.version === 'cloud-v1' && Array.isArray(imported.supervisees);
+        const isMulti = !isCloud && Array.isArray(imported.supervisees);
         const isLegacy = Array.isArray(imported.fieldworkLogs) && Array.isArray(imported.supervisionLogs);
-        if (!isMulti && !isLegacy) {
+        if (!isCloud && !isMulti && !isLegacy) {
           showToast('올바른 백업 파일이 아닙니다', 'danger');
           return;
         }
-        if (window.confirm('현재 데이터를 백업 파일로 덮어쓸까요?\n(현재 데이터는 삭제됩니다)')) {
-          // 마이그레이션 적용 (레거시 → 신규 구조 자동 변환)
-          const result = migrateData(imported);
-          setData(result ? result.data : imported);
-          showToast('데이터가 복원되었습니다', 'good');
+        if (!window.confirm('이 백업 파일의 내용을 클라우드에 추가할까요?\n(기존 데이터에 추가됩니다. 중복 방지를 위해 백업 전 클라우드 데이터를 정리하세요)')) {
+          return;
         }
+
+        // 마이그레이션 (레거시 → 신규 구조)
+        let svList = [];
+        if (isCloud || isMulti) {
+          svList = imported.supervisees;
+        } else if (isLegacy) {
+          svList = [{
+            name: imported.superviseeName || '(이름 없음)',
+            examType: imported.examType || 'QASP-S',
+            mainSupervisor: imported.mainSupervisor || '',
+            supervisors: imported.supervisors || [],
+            startDate: imported.startDate || '',
+            fieldworkLogs: imported.fieldworkLogs,
+            supervisionLogs: imported.supervisionLogs
+          }];
+        }
+
+        setLoading(true);
+        let importedCount = 0;
+        for (const sv of svList) {
+          // 1. 슈퍼바이지 생성
+          const created = await createSupervisee(loggedInUser.id, {
+            name: sv.name,
+            examType: sv.examType || sv.exam_type || 'QASP-S',
+            mainSupervisor: sv.mainSupervisor || sv.main_supervisor || '',
+            supervisors: sv.supervisors || [],
+            startDate: sv.startDate || sv.start_date || ''
+          });
+          if (!created) continue;
+
+          // 2. 필드워크 로그 일괄 추가
+          for (const log of (sv.fieldworkLogs || [])) {
+            await createFieldworkLog(created.id, {
+              date: log.date,
+              startTime: log.startTime || log.start_time,
+              endTime: log.endTime || log.end_time,
+              direct: log.direct,
+              supervisor: log.supervisor,
+              activities: log.activities || [],
+              customActivities: log.customActivities || log.custom_activities || []
+            });
+          }
+
+          // 3. 슈퍼비전 로그 일괄 추가
+          for (const log of (sv.supervisionLogs || [])) {
+            await createSupervisionLog(created.id, {
+              date: log.date,
+              hours: log.hours,
+              type: log.type,
+              supervisor: log.supervisor,
+              notes: log.notes
+            });
+          }
+          importedCount++;
+        }
+
+        showToast(`✅ ${importedCount}명의 슈퍼바이지 데이터가 복원되었습니다`, 'good');
+        await reloadAllData(loggedInUser.id);
       } catch (err) {
-        showToast('파일을 읽을 수 없습니다', 'danger');
+        console.error('importData error:', err);
+        showToast('파일을 읽을 수 없습니다: ' + err.message, 'danger');
+      } finally {
+        setLoading(false);
       }
     };
     reader.readAsText(file);
@@ -831,6 +1043,32 @@ export default function App() {
     };
   }, [activeSupervisee, exam]);
 
+  // 🔄 초기 인증 체크 중 로딩 화면
+  if (authChecking) {
+    return (
+      <div style={{ fontFamily: '"Pretendard", "맑은 고딕", sans-serif', background: C.bg, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
+        <div style={{ fontSize: 32 }}>🔄</div>
+        <div style={{ fontSize: 13, color: C.grayText }}>잠시만 기다려주세요...</div>
+      </div>
+    );
+  }
+
+  // 🔒 인증 안 됐으면 로그인 화면 표시
+  if (!isAuthenticated) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  // 🔄 데이터 로딩 중 (로그인 직후)
+  if (loading && supervisees.length === 0) {
+    return (
+      <div style={{ fontFamily: '"Pretendard", "맑은 고딕", sans-serif', background: C.bg, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
+        <div style={{ fontSize: 32 }}>☁️</div>
+        <div style={{ fontSize: 14, color: C.plumDark, fontWeight: 600 }}>클라우드에서 데이터를 불러오는 중...</div>
+        <div style={{ fontSize: 11, color: C.grayText }}>잠시만 기다려주세요</div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ fontFamily: '"Pretendard", "맑은 고딕", -apple-system, sans-serif', background: C.bg, minHeight: '100vh', color: C.grayText }}>
       <header style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, padding: '24px 0', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
@@ -886,6 +1124,11 @@ export default function App() {
             <input ref={fileInputRef} type="file" accept=".json" onChange={importData} style={{ display: 'none' }} />
             <button onClick={() => setShowGuide(true)} title="사용 안내 보기"
                     style={headerBtnStyle}>📖</button>
+            <button onClick={handleLogout} 
+                    title={`로그아웃 (현재: ${loggedInUser?.name || loggedInUser?.user_id})`}
+                    style={{ ...headerBtnStyle, display: 'flex', alignItems: 'center', gap: 4, padding: '8px 12px', fontSize: 12 }}>
+              🔒 <span style={{ fontSize: 11, color: C.plumDark }}>{loggedInUser?.name || loggedInUser?.user_id}</span>
+            </button>
           </div>
         </div>
       </header>
@@ -1004,7 +1247,7 @@ function WelcomeCard({ examType, superviseeName }) {
         {isQASP
           ? ' (이 중 최소 600시간은 슈퍼바이저 역할 필수)'
           : ' (Direct 최대 800hr / Indirect 최소 1,200hr)'}
-        + 매월 슈퍼비전 <strong>5%</strong>
+        + 매월 슈퍼비전 <strong>5%</strong> (총 <strong>{isQASP ? '50' : '100'}시간</strong>)
       </div>
       <div style={{ marginTop: 8, fontSize: 11, color: C.grayText, fontStyle: 'italic', textAlign: 'right' }}>
         🛟 우측 상단 <strong>📖</strong> 버튼을 누르면 자세한 사용 안내를 볼 수 있어요
@@ -1121,18 +1364,18 @@ function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
           />
           <BigProgressBar
             icon="🎓"
-            label="슈퍼비전 (인정 시간 기준)"
-            sublabel={stats.fwTotal > 0 ? `현재 필드워크 ${fmtI(stats.fwTotal)}hr × 5% = 목표 ${fmt(stats.svRequired)}hr` : null}
+            label="슈퍼비전 (누적 인정 시간)"
+            sublabel={`${exam === EXAM_DATA['QBA'] ? 'QBA' : 'QASP-S'} 최종 필요 슈퍼비전: ${fmt(exam.total * exam.svPercent / 100)}hr (필드워크 ${exam.total}hr × 5%)`}
             current={stats.svAccepted}
-            target={stats.svRequired}
+            target={exam.total * exam.svPercent / 100}
             color={C.plumDark}
             bgColor={C.pinkSoft}
             unit="hr"
             isPercent={true}
-            note={stats.fwTotal === 0 ? '필드워크 기록 추가 시 목표가 자동 설정됩니다' : (stats.svGroupExcluded > 0 ? `⚠ 그룹 ${fmt(stats.svGroupExcluded)}hr은 50% 한도 초과로 인정 안 됨 (입력 ${fmt(stats.svTotal)}hr → 인정 ${fmt(stats.svAccepted)}hr)` : null)}
+            note={stats.svGroupExcluded > 0 ? `⚠ 그룹 ${fmt(stats.svGroupExcluded)}hr은 월별 한도 초과로 인정 안 됨 (입력 ${fmt(stats.svTotal)}hr → 인정 ${fmt(stats.svAccepted)}hr) · 자세한 월별 충족 여부는 아래 월별 요약 참고` : (stats.svTotal > 0 ? `💡 QABA는 매월 단위로 5% 충족을 평가합니다. 위 진행률은 누적 참고용이며, 월별 미충족 여부는 아래 표에서 확인하세요` : null)}
             extraInfo={stats.svTotal > 0 ? [
               { label: '👤 개별 (Individual)', value: stats.svIndividual, color: C.goldDeep, plain: true, hint: `전체 입력의 ${(100 - stats.svGroupPct).toFixed(0)}%` },
-              { label: '👥 그룹 (Group, 최대 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ 인정 ${fmt(stats.svGroupAccepted)}hr만 (${fmt(stats.svGroupExcluded)}hr 초과)` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
+              { label: '👥 그룹 (Group, 월별 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ 인정 ${fmt(stats.svGroupAccepted)}hr만 (${fmt(stats.svGroupExcluded)}hr 초과)` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
             ] : null}
           />
         </div>
@@ -1641,26 +1884,26 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
   }, [data.fieldworkLogs]);
 
   // 빈 회기 추가 (펼친 상태로)
-  const add = () => {
-    const id = Date.now();
-    const newLog = {
-      id,
+  const add = async () => {
+    const newLogData = {
       supervisor: data.mainSupervisor || '',
       date: todayYMD(),
       startTime: '',
       endTime: '',
-      direct: '',
+      direct: 0,
       activities: [],
       customActivities: []
     };
-    update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
-    setRecentlyAddedId(id);
+    const created = await createFieldworkLog(data.id, newLogData);
+    if (created) {
+      update({ fieldworkLogs: [created, ...data.fieldworkLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
   // 이전 회기 복사 (날짜는 다음 날, 나머지는 그대로)
-  const copyLast = () => {
+  const copyLast = async () => {
     if (!lastLog) return;
-    const id = Date.now();
     // 날짜 +1
     let nextDate = todayYMD();
     if (lastLog.date) {
@@ -1668,34 +1911,50 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
       d.setDate(d.getDate() + 1);
       nextDate = dateToYMD(d);
     }
-    const newLog = {
-      ...lastLog,
-      id,
-      date: nextDate
+    const newLogData = {
+      supervisor: lastLog.supervisor || '',
+      date: nextDate,
+      startTime: lastLog.startTime || '',
+      endTime: lastLog.endTime || '',
+      direct: lastLog.direct || 0,
+      activities: lastLog.activities || [],
+      customActivities: lastLog.customActivities || []
     };
-    update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
-    setRecentlyAddedId(id);
+    const created = await createFieldworkLog(data.id, newLogData);
+    if (created) {
+      update({ fieldworkLogs: [created, ...data.fieldworkLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
   // 빠른 입력 - 한 줄로 추가
-  const quickAdd = (quickLog) => {
-    const id = Date.now();
-    const newLog = {
-      id,
+  const quickAdd = async (quickLog) => {
+    const newLogData = {
       supervisor: quickLog.supervisor || data.mainSupervisor || '',
       date: quickLog.date || todayYMD(),
       startTime: quickLog.startTime || '',
       endTime: quickLog.endTime || '',
-      direct: quickLog.direct || '',
-      activities: [], // 빠른 입력 시 활동은 빈 배열 (사용자가 카드 펼쳐 추가)
+      direct: quickLog.direct || 0,
+      activities: [],
       customActivities: []
     };
-    update({ fieldworkLogs: [newLog, ...data.fieldworkLogs] });
-    setRecentlyAddedId(id);
+    const created = await createFieldworkLog(data.id, newLogData);
+    if (created) {
+      update({ fieldworkLogs: [created, ...data.fieldworkLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
-  const upd = (id, c) => update({ fieldworkLogs: data.fieldworkLogs.map(l => l.id === id ? { ...l, ...c } : l) });
-  const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ fieldworkLogs: data.fieldworkLogs.filter(l => l.id !== id) }); };
+  const upd = async (id, c) => {
+    // 낙관적 업데이트
+    update({ fieldworkLogs: data.fieldworkLogs.map(l => l.id === id ? { ...l, ...c } : l) });
+    await updateFieldworkLog(id, c);
+  };
+  const del = async (id) => {
+    if (!window.confirm('이 기록을 삭제할까요?')) return;
+    update({ fieldworkLogs: data.fieldworkLogs.filter(l => l.id !== id) });
+    await deleteFieldworkLog(id);
+  };
 
   const sortedLogs = useMemo(() => {
     return [...data.fieldworkLogs].sort((a, b) => {
@@ -2357,50 +2616,62 @@ function SupervisionLog({ activeSupervisee, updateActive }) {
     })[0];
   }, [data.supervisionLogs]);
 
-  const add = () => {
-    const id = Date.now();
-    const newLog = { id, date: todayYMD(), hours: '', type: 'individual', supervisor: data.mainSupervisor || '', notes: '' };
-    update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
-    setRecentlyAddedId(id);
+  const add = async () => {
+    const newLogData = { date: todayYMD(), hours: 0, type: 'individual', supervisor: data.mainSupervisor || '', notes: '' };
+    const created = await createSupervisionLog(data.id, newLogData);
+    if (created) {
+      update({ supervisionLogs: [created, ...data.supervisionLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
   // 이전 슈퍼비전 복사 (날짜 +7일 - 주1회가 일반적)
-  const copyLast = () => {
+  const copyLast = async () => {
     if (!lastLog) return;
-    const id = Date.now();
     let nextDate = todayYMD();
     if (lastLog.date) {
       const d = parseLocalDate(lastLog.date);
       d.setDate(d.getDate() + 7);
       nextDate = dateToYMD(d);
     }
-    const newLog = {
-      ...lastLog,
-      id,
+    const newLogData = {
       date: nextDate,
-      type: lastLog.type || 'individual', // 이전 type 유지
-      notes: '' // 메모는 비움
+      hours: lastLog.hours || 0,
+      type: lastLog.type || 'individual',
+      supervisor: lastLog.supervisor || '',
+      notes: ''
     };
-    update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
-    setRecentlyAddedId(id);
+    const created = await createSupervisionLog(data.id, newLogData);
+    if (created) {
+      update({ supervisionLogs: [created, ...data.supervisionLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
-  const quickAdd = (quickLog) => {
-    const id = Date.now();
-    const newLog = {
-      id,
+  const quickAdd = async (quickLog) => {
+    const newLogData = {
       date: quickLog.date || todayYMD(),
-      hours: quickLog.hours || '',
+      hours: quickLog.hours || 0,
       type: quickLog.type || 'individual',
       supervisor: quickLog.supervisor || data.mainSupervisor || '',
       notes: ''
     };
-    update({ supervisionLogs: [newLog, ...data.supervisionLogs] });
-    setRecentlyAddedId(id);
+    const created = await createSupervisionLog(data.id, newLogData);
+    if (created) {
+      update({ supervisionLogs: [created, ...data.supervisionLogs] });
+      setRecentlyAddedId(created.id);
+    }
   };
 
-  const upd = (id, c) => update({ supervisionLogs: data.supervisionLogs.map(l => l.id === id ? { ...l, ...c } : l) });
-  const del = (id) => { if (window.confirm('이 기록을 삭제할까요?')) update({ supervisionLogs: data.supervisionLogs.filter(l => l.id !== id) }); };
+  const upd = async (id, c) => {
+    update({ supervisionLogs: data.supervisionLogs.map(l => l.id === id ? { ...l, ...c } : l) });
+    await updateSupervisionLog(id, c);
+  };
+  const del = async (id) => {
+    if (!window.confirm('이 기록을 삭제할까요?')) return;
+    update({ supervisionLogs: data.supervisionLogs.filter(l => l.id !== id) });
+    await deleteSupervisionLog(id);
+  };
 
   const sortedLogs = useMemo(() => {
     return [...data.supervisionLogs].sort((a, b) => {
@@ -2789,7 +3060,7 @@ function ExamInfoTab({ currentExam }) {
         <div style={{ display: 'grid', gap: 12 }}>
           <PrepStep num="1" title="자격 선택" desc="본인 학력에 맞는 자격 선택 (석사 이상 → QBA, 학사 → QASP-S)" />
           <PrepStep num="2" title="코스워크 이수" desc="QABA 승인 교육기관에서 코스워크 수강 (QBA 270시간 · QASP-S 188시간)" />
-          <PrepStep num="3" title="슈퍼바이저 매칭" desc="QBA의 경우 QBA 1년 이상 보유자/LBA/LP. QASP-S의 경우 QBA(즉시 가능) 또는 석사급 ABA 라이센스 보유자. 슈퍼비전 합의서 작성 후 시작" />
+          <PrepStep num="3" title="슈퍼바이저 매칭" desc="QBA의 경우 QBA를 1년 이상 보유한 슈퍼바이저, QASP-S의 경우 QBA(즉시 가능) 또는 석사급 ABA 관련 자격 보유자. 슈퍼비전 합의서 작성 후 시작" />
           <PrepStep num="4" title="필드워크 시작" desc="첫 코스워크 수업일 이후부터 시간 누적 가능. 월 20~140시간만 인정" />
           <PrepStep num="5" title="요건 충족" desc="필드워크 총 시간 + 매월 슈퍼비전 5% + 코스워크 + 추천서 + 배경 조회" />
           <PrepStep num="6" title="시험 응시" desc="QABA 공식 사이트에서 응시료 결제 후 시험 신청 (QBA $350 · QASP-S $300)" />
@@ -2812,7 +3083,7 @@ function ExamInfoTab({ currentExam }) {
           <SimpleInfoRow label="└ Indirect" value="최소 1,200시간 (전체의 60% 이상) - 감독·계획·평가 등 간접 업무" />
           <SimpleInfoRow label="월별 시간 제한" value="최소 20시간 ~ 최대 140시간 (활발한 ABA 실무 필요)" />
           <SimpleInfoRow label="누적 기간" value="7년 이내" />
-          <SimpleInfoRow label="슈퍼비전" value="매월 행동분석 서비스 시간의 5%" />
+          <SimpleInfoRow label="슈퍼비전" value="매월 그 달 필드워크 시간의 5% · 총 100시간 (2,000hr × 5%)" />
           <SimpleInfoRow label="└ 그룹 슈퍼비전" value="개별 슈퍼비전 기간 동안 최대 50%까지 가능" />
           <SimpleInfoRow label="시험" value="125문항 (100 채점+25 시범), 3시간" />
           <SimpleInfoRow label="응시료" value="$350 USD (재시험 $225)" />
@@ -2841,7 +3112,7 @@ function ExamInfoTab({ currentExam }) {
           <SimpleInfoRow label="└ 1:1 직접 케어" value="최대 400시간 (직접 치료 가능, 400시간 초과 인정 X)" />
           <SimpleInfoRow label="월별 시간 제한" value="최소 20시간 ~ 최대 140시간 (활발한 ABA 실무 필요)" />
           <SimpleInfoRow label="누적 기간" value="7년 이내" />
-          <SimpleInfoRow label="슈퍼비전" value="매월 5% (30일 주기) · 실시간 화상회의 가능, 최소 1회는 대면 또는 실시간 1시간 필수" />
+          <SimpleInfoRow label="슈퍼비전" value="매월 5% (30일 주기) · 총 50시간 (1,000hr × 5%) · 실시간 화상 가능, 최소 1회는 대면 또는 실시간 1시간 필수" />
           <SimpleInfoRow label="└ 그룹 슈퍼비전" value="개별 슈퍼비전 기간 동안 최대 50%까지 가능" />
           <SimpleInfoRow label="시험" value="125문항 (100 채점+25 시범), 3시간, 합격 72%" />
           <SimpleInfoRow label="응시료" value="$300 USD" />
@@ -2876,11 +3147,11 @@ QABA 규정상 그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정�
           q="슈퍼바이저는 누구에게 받을 수 있나요?"
           a={`자격에 따라 다릅니다.
 
-[QBA 추구 시] QBA 자격을 최소 1년 이상 보유한 사람, 또는 다른 공인 인증기관에서 1년 이상 자격을 받은 행동분석가, LBA(Licensed Behavior Analyst), ABA 영역의 자격을 가진 LP(Licensed Psychologist)에게 받아야 합니다.
+[QBA 추구 시] QBA 자격을 최소 1년 이상 보유한 사람, 또는 다른 공인 인증기관(예: BACB의 BCBA 등)에서 1년 이상 자격을 받은 행동분석가에게 받아야 합니다.
 
-[QASP-S 추구 시] QBA 자격자(시험 통과 즉시 슈퍼비전 가능), 또는 석사급 이상의 ABA 라이센스/자격 보유자에게 받을 수 있습니다.
+[QASP-S 추구 시] QBA 자격자(시험 통과 즉시 슈퍼비전 가능), 또는 석사급 이상의 ABA 관련 자격 보유자(예: BCBA)에게 받을 수 있습니다.
 
-슈퍼바이저는 자격이 유효한 상태(만료되지 않음)여야 하며, 본인 자격증 보드의 윤리 강령을 준수해야 합니다.`}
+슈퍼바이저는 자격이 유효한 상태(만료되지 않음)여야 하며, 본인 자격증 보드의 윤리 강령을 준수해야 합니다. 슈퍼비전 시작 전 슈퍼비전 합의서(contract agreement) 작성이 필수입니다.`}
         />
         <FAQItem
           q="이 시스템에 입력한 데이터가 공식 인증에 그대로 쓰이나요?"
@@ -3063,6 +3334,263 @@ const logCardStyle = { background: C.white, borderRadius: 12, padding: 20, boxSh
 const logInputStyle = { padding: '9px 12px', fontSize: 14, border: '1px solid #E0D5D8', borderRadius: 6, background: C.inputBg, fontFamily: 'inherit', outline: 'none' };
 const addBtnStyle = { padding: '10px 20px', fontSize: 14, fontWeight: 600, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer', boxShadow: '0 2px 4px rgba(216,136,150,0.3)' };
 const delBtnStyle = { padding: '8px 12px', background: '#FFF0F0', border: '1px solid #FFD0D0', color: C.dangerRed, borderRadius: 6, cursor: 'pointer', fontSize: 16 };
+
+// ============================================
+// 🔒 사용자 계정은 Supabase의 tracker_users 테이블에서 관리
+// ============================================
+// 사용자 추가/삭제/만료일 설정: Supabase 대시보드 → Table Editor → tracker_users
+// 형식: { user_id: '아이디', password: '비밀번호', name: '표시 이름', role: 'admin' | 'user', expires_at: '만료일' }
+
+// ============================================
+// 🔒 LOGIN SCREEN (아이디 + 비밀번호 로그인 화면)
+// ============================================
+function LoginScreen({ onLogin }) {
+  const [userId, setUserId] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  
+  // 🔒 잠금 상태 (localStorage에서 복원)
+  const [attempts, setAttempts] = useState(() => {
+    try { return parseInt(localStorage.getItem('geomdan_login_attempts') || '0', 10); }
+    catch (e) { return 0; }
+  });
+  const [lockUntil, setLockUntil] = useState(() => {
+    try {
+      const v = localStorage.getItem('geomdan_login_lock_until');
+      return v ? parseInt(v, 10) : 0;
+    } catch (e) { return 0; }
+  });
+  const [now, setNow] = useState(Date.now());
+
+  const MAX_ATTEMPTS = 5;
+  const LOCK_DURATION = 30 * 60 * 1000; // 30분
+  const isLocked = lockUntil > now;
+  const remainingMs = Math.max(0, lockUntil - now);
+  const remainingMin = Math.floor(remainingMs / 60000);
+  const remainingSec = Math.floor((remainingMs % 60000) / 1000);
+
+  // 잠금 시간 카운트다운 (1초마다 업데이트)
+  useEffect(() => {
+    if (!isLocked) return;
+    const timer = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= lockUntil) {
+        // 잠금 해제
+        try {
+          localStorage.removeItem('geomdan_login_lock_until');
+          localStorage.removeItem('geomdan_login_attempts');
+        } catch (e) {}
+        setLockUntil(0);
+        setAttempts(0);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isLocked, lockUntil]);
+
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const handleSubmit = async () => {
+    if (isLocked) return; // 잠금 중엔 무시
+    if (loggingIn) return; // 중복 클릭 방지
+    if (!userId.trim() || !password.trim()) {
+      setError('아이디와 비밀번호를 모두 입력해주세요');
+      return;
+    }
+
+    setLoggingIn(true);
+    const result = await authLogin(userId.trim(), password);
+    setLoggingIn(false);
+
+    if (result.success) {
+      // 성공 - 카운터 초기화
+      try {
+        localStorage.removeItem('geomdan_login_attempts');
+        localStorage.removeItem('geomdan_login_lock_until');
+      } catch (e) {}
+      onLogin(result.user);
+    } else {
+      const newAttempts = attempts + 1;
+      setAttempts(newAttempts);
+      try { localStorage.setItem('geomdan_login_attempts', String(newAttempts)); } catch (e) {}
+
+      if (newAttempts >= MAX_ATTEMPTS) {
+        // 5회 실패 - 30분 잠금
+        const until = Date.now() + LOCK_DURATION;
+        setLockUntil(until);
+        try { localStorage.setItem('geomdan_login_lock_until', String(until)); } catch (e) {}
+        setError(`보안을 위해 30분간 로그인이 제한됩니다`);
+      } else {
+        setError(`${result.error} (${newAttempts}/${MAX_ATTEMPTS}회 실패)`);
+      }
+      setPassword('');
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') handleSubmit();
+  };
+
+  const inputStyleLogin = (hasError) => ({
+    width: '100%',
+    padding: '13px 16px',
+    fontSize: 14,
+    border: `1.5px solid ${hasError ? C.dangerRed : '#E0D5D8'}`,
+    borderRadius: 8,
+    background: C.inputBg,
+    fontFamily: 'inherit',
+    outline: 'none',
+    boxSizing: 'border-box',
+    transition: 'border-color 0.15s'
+  });
+
+  return (
+    <div style={{
+      fontFamily: '"Pretendard", "맑은 고딕", -apple-system, sans-serif',
+      background: `linear-gradient(135deg, ${C.pinkSoft} 0%, ${C.pinkPale} 50%, ${C.bg} 100%)`,
+      minHeight: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20
+    }}>
+      {/* 로고 + 타이틀 */}
+      <div style={{ marginBottom: 28, textAlign: 'center' }}>
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="검단ABA"
+             style={{ width: 80, height: 80, objectFit: 'contain', marginBottom: 12 }} />
+        <h1 style={{ margin: '0 0 4px 0', fontSize: 22, fontWeight: 700, color: C.pinkDeep, letterSpacing: '-0.5px' }}>
+          검단ABA 자격시간 트래커
+        </h1>
+        <p style={{ margin: 0, fontSize: 13, color: C.grayText }}>
+          QABA QBA·QASP-S 슈퍼비전 시간 관리 시스템
+        </p>
+      </div>
+
+      {/* 로그인 카드 */}
+      <div style={{
+        background: C.white,
+        borderRadius: 16,
+        padding: 32,
+        maxWidth: 400,
+        width: '100%',
+        boxShadow: '0 4px 24px rgba(216,136,150,0.15)',
+        border: `1px solid ${C.pinkLight}`
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: 22 }}>
+          <div style={{ fontSize: 32, marginBottom: 6 }}>🔒</div>
+          <h2 style={{ margin: '0 0 4px 0', fontSize: 17, fontWeight: 700, color: C.plumDark }}>
+            로그인
+          </h2>
+          <p style={{ margin: 0, fontSize: 12, color: C.grayText, lineHeight: 1.5 }}>
+            검단ABA에서 발급받은 계정 정보를 입력해주세요
+          </p>
+        </div>
+
+        {/* 아이디 */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: C.grayHead, marginBottom: 5 }}>
+            아이디
+          </label>
+          <input
+            type="text"
+            value={userId}
+            onChange={e => { setUserId(e.target.value); setError(''); }}
+            onKeyDown={handleKeyDown}
+            placeholder="아이디 입력"
+            autoFocus
+            autoComplete="username"
+            disabled={isLocked}
+            style={{ ...inputStyleLogin(error), opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : 'text' }}
+          />
+        </div>
+
+        {/* 비밀번호 */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: C.grayHead, marginBottom: 5 }}>
+            비밀번호
+          </label>
+          <input
+            type="password"
+            value={password}
+            onChange={e => { setPassword(e.target.value); setError(''); }}
+            onKeyDown={handleKeyDown}
+            placeholder="비밀번호 입력"
+            autoComplete="current-password"
+            disabled={isLocked}
+            style={{ ...inputStyleLogin(error), opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : 'text' }}
+          />
+        </div>
+
+        {/* 잠금 상태 - 카운트다운 */}
+        {isLocked && (
+          <div style={{ marginBottom: 12, padding: 14, background: '#FFE5E5', border: `2px solid ${C.dangerRed}`, borderRadius: 8, textAlign: 'center' }}>
+            <div style={{ fontSize: 24, marginBottom: 6 }}>🚫</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.dangerRed, marginBottom: 4 }}>
+              로그인이 일시 차단되었습니다
+            </div>
+            <div style={{ fontSize: 11, color: C.grayHead, marginBottom: 8, lineHeight: 1.5 }}>
+              보안을 위해 5회 연속 실패 시 30분간 잠금됩니다
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.plumDark, fontFamily: 'monospace' }}>
+              {String(remainingMin).padStart(2, '0')}:{String(remainingSec).padStart(2, '0')}
+            </div>
+            <div style={{ fontSize: 10, color: C.grayText, marginTop: 4 }}>
+              남은 시간 (분:초)
+            </div>
+          </div>
+        )}
+
+        {/* 에러 메시지 (잠금 아닐 때만) */}
+        {error && !isLocked && (
+          <div style={{ marginBottom: 12, padding: '8px 12px', background: '#FFF0F0', border: '1px solid #FFD0D0', borderRadius: 6, fontSize: 12, color: C.dangerRed, lineHeight: 1.5 }}>
+            ⚠ {error}
+            {attempts >= 3 && (
+              <div style={{ marginTop: 4, fontSize: 11, color: C.grayText }}>
+                💡 비밀번호 분실 시 검단ABA에 문의해주세요
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 로그인 버튼 */}
+        <button onClick={handleSubmit}
+                disabled={!userId || !password || isLocked || loggingIn}
+                style={{
+                  width: '100%',
+                  padding: '13px 16px',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: C.white,
+                  background: (userId && password && !isLocked && !loggingIn) ? C.pinkDeep : '#D0C5C8',
+                  border: 'none',
+                  borderRadius: 8,
+                  cursor: (userId && password && !isLocked && !loggingIn) ? 'pointer' : 'not-allowed',
+                  transition: 'background 0.15s',
+                  boxShadow: (userId && password && !isLocked && !loggingIn) ? '0 2px 6px rgba(216,136,150,0.25)' : 'none'
+                }}>
+          {isLocked ? '🔒 로그인 차단됨' : (loggingIn ? '🔄 로그인 중...' : '로그인')}
+        </button>
+
+        <div style={{ marginTop: 18, padding: 12, background: C.pinkPale, borderRadius: 8, fontSize: 11, color: C.grayHead, lineHeight: 1.6 }}>
+          💡 <strong>이용 안내</strong><br/>
+          본 시스템은 <strong>검단ABA언어행동연구소</strong>의 라이센스 사용자 전용입니다. 
+          미허가 사용은 금지되며, 계정 공유·유출 시 라이센스가 취소될 수 있습니다.
+        </div>
+      </div>
+
+      {/* 푸터 */}
+      <div style={{ marginTop: 28, textAlign: 'center' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.plumDark, marginBottom: 4 }}>
+          © 검단ABA언어행동연구소 · All Rights Reserved
+        </div>
+        <div style={{ fontSize: 10, color: C.grayText, fontStyle: 'italic' }}>
+          무단 복제·배포·재판매 금지 · 저작권법에 의해 보호됨
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ============================================
 // 빈 상태 - 슈퍼바이지 없을 때
@@ -3297,7 +3825,7 @@ function OverviewTab({ supervisees, onSelect }) {
       });
 
       const svAccepted = Object.values(monthMap).reduce((s, m) => s + m.svAccepted, 0);
-      const svRequired = fwTotal * (exam.svPercent / 100);
+      const svRequired = exam.total * (exam.svPercent / 100); // QBA 100hr / QASP-S 50hr 고정
 
       // 이번 달 직전까지의 미충족 월
       const now = new Date();
