@@ -31,6 +31,11 @@ export const authLogin = async (userId, password) => {
     return { success: false, error: '아이디 또는 비밀번호가 일치하지 않습니다' };
   }
   
+  // 비활성 계정 체크 (관리자가 수동 차단한 경우)
+  if (data.is_active === false) {
+    return { success: false, error: '계정이 비활성화되었습니다. 검단ABA에 문의해주세요' };
+  }
+  
   // 만료일 체크
   if (data.expires_at && new Date(data.expires_at) < new Date()) {
     return { success: false, error: '라이센스가 만료되었습니다. 검단ABA에 문의해주세요' };
@@ -295,3 +300,151 @@ export const setActiveSuperviseeId = (userId, superviseeId) => {
     }
   } catch (e) {}
 };
+
+// ============================================
+// 관리자 - 사용자 관리 함수
+// ============================================
+export const fetchAllUsers = async () => {
+  const { data, error } = await supabase
+    .from(TABLES.USERS)
+    .select('*')
+    .order('created_at', { ascending: false });
+  
+  if (error) {
+    console.error('fetchAllUsers error:', error);
+    return [];
+  }
+  return data || [];
+};
+
+export const createUser = async (userData) => {
+  const { data, error } = await supabase
+    .from(TABLES.USERS)
+    .insert({
+      user_id: userData.user_id,
+      password: userData.password,
+      name: userData.name,
+      role: userData.role || 'user',
+      expires_at: userData.expires_at || null,
+      is_active: userData.is_active !== false // 기본 true
+    })
+    .select()
+    .single();
+  
+  if (error) {
+    console.error('createUser error:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true, user: data };
+};
+
+export const updateUser = async (id, changes) => {
+  const dbChanges = { ...changes, updated_at: new Date().toISOString() };
+  delete dbChanges.id;
+  delete dbChanges.created_at;
+  
+  const { error } = await supabase
+    .from(TABLES.USERS)
+    .update(dbChanges)
+    .eq('id', id);
+  
+  if (error) {
+    console.error('updateUser error:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+};
+
+// 사용자 활성/비활성 토글
+export const toggleUserActive = async (id, isActive) => {
+  const { error } = await supabase
+    .from(TABLES.USERS)
+    .update({ is_active: isActive, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  
+  if (error) {
+    console.error('toggleUserActive error:', error);
+    return false;
+  }
+  return true;
+};
+
+export const deleteUser = async (id) => {
+  const { error } = await supabase
+    .from(TABLES.USERS)
+    .delete()
+    .eq('id', id);
+  
+  if (error) {
+    console.error('deleteUser error:', error);
+    return false;
+  }
+  return true;
+};
+
+// 특정 사용자의 슈퍼바이지/로그 통계 + 진행률 조회
+export const fetchUserStats = async (userId) => {
+  const { data: svs } = await supabase
+    .from(TABLES.SUPERVISEES)
+    .select('id, name, exam_type')
+    .eq('user_id', userId);
+  
+  if (!svs || svs.length === 0) {
+    return { 
+      superviseeCount: 0, fieldworkCount: 0, supervisionCount: 0, 
+      supervisees: [], 
+      totalFwHours: 0, totalSvHours: 0, 
+      progress: 0, examType: null,
+      target: 0
+    };
+  }
+  
+  const svIds = svs.map(s => s.id);
+  
+  // 카운트
+  const [{ count: fwCount }, { count: svCount }] = await Promise.all([
+    supabase.from(TABLES.FIELDWORK_LOGS).select('*', { count: 'exact', head: true }).in('supervisee_id', svIds),
+    supabase.from(TABLES.SUPERVISION_LOGS).select('*', { count: 'exact', head: true }).in('supervisee_id', svIds)
+  ]);
+  
+  // 실제 시간 합계 (필드워크 = end-start, 슈퍼비전 = hours)
+  const { data: fwLogs } = await supabase
+    .from(TABLES.FIELDWORK_LOGS)
+    .select('start_time, end_time')
+    .in('supervisee_id', svIds);
+  
+  const { data: svLogs } = await supabase
+    .from(TABLES.SUPERVISION_LOGS)
+    .select('hours')
+    .in('supervisee_id', svIds);
+  
+  // 필드워크 시간 합 (start~end)
+  const totalFwHours = (fwLogs || []).reduce((sum, l) => {
+    if (!l.start_time || !l.end_time) return sum;
+    const [sh, sm] = l.start_time.split(':').map(Number);
+    const [eh, em] = l.end_time.split(':').map(Number);
+    let mins = (eh * 60 + em) - (sh * 60 + sm);
+    if (mins < 0) mins += 24 * 60;
+    return sum + mins / 60;
+  }, 0);
+  
+  const totalSvHours = (svLogs || []).reduce((s, l) => s + (Number(l.hours) || 0), 0);
+  
+  // 첫 번째 슈퍼바이지의 exam_type 기준 (일반 사용자는 1명만)
+  const examType = svs[0]?.exam_type || 'QASP-S';
+  const target = examType === 'QBA' ? 2000 : 1000;
+  const progress = target > 0 ? (totalFwHours / target) * 100 : 0;
+  
+  return {
+    superviseeCount: svs.length,
+    fieldworkCount: fwCount || 0,
+    supervisionCount: svCount || 0,
+    supervisees: svs,
+    totalFwHours,
+    totalSvHours,
+    progress,
+    examType,
+    target
+  };
+};
+
