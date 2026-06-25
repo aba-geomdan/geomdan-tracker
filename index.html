@@ -20,8 +20,45 @@
         font-family: "Pretendard", "맑은 고딕", -apple-system, BlinkMacSystemFont, sans-serif;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        -webkit-tap-highlight-color: transparent;
       }
       #root { min-height: 100vh; }
+      
+      /* 모바일 최적화 */
+      @media (max-width: 640px) {
+        body { font-size: 14px; }
+        h1 { font-size: 18px !important; }
+        h2 { font-size: 16px !important; }
+        h3 { font-size: 14px !important; }
+        
+        /* 작은 화면에서 패딩 줄이기 */
+        main { padding: 16px !important; }
+        
+        /* 입력 필드 줌인 방지 (iOS) */
+        input, select, textarea { font-size: 16px !important; }
+        
+        /* 테이블 가로 스크롤 */
+        table { font-size: 12px !important; }
+        
+        /* 버튼 터치 영역 확보 */
+        button { min-height: 36px; }
+      }
+      
+      /* 스크롤바 디자인 (선택) */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #FAF7F8; }
+      ::-webkit-scrollbar-thumb { background: #E8A8B0; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #D88896; }
+      
+      /* 모달 애니메이션 */
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
     </style>
   </head>
   <body>
