@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+aimport React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import {
   authLogin,
@@ -4131,7 +4131,11 @@ function LoginScreen({ onLogin }) {
             onKeyDown={handleKeyDown}
             placeholder="아이디 입력"
             autoFocus
-            autoComplete="username"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            name={`uid_${Math.random()}`}
             disabled={isLocked}
             style={{ ...inputStyleLogin(error), opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : 'text' }}
           />
@@ -4148,7 +4152,11 @@ function LoginScreen({ onLogin }) {
             onChange={async (e) => { setPassword(e.target.value); setError(''); }}
             onKeyDown={handleKeyDown}
             placeholder="비밀번호 입력"
-            autoComplete="current-password"
+            autoComplete="new-password"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            name={`pw_${Math.random()}`}
             disabled={isLocked}
             style={{ ...inputStyleLogin(error), opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : 'text' }}
           />
