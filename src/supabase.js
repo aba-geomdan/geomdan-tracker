@@ -1,450 +1,158 @@
-// ============================================
-// Supabase 클라이언트 설정
-// ============================================
-import { createClient } from '@supabase/supabase-js';
+// ============================================================
+// Supabase 데이터 계층 (Edge Function 경유)
+// - tracker_* 테이블에 직접 접근하지 않고 tracker-data Edge Function 호출
+// - service_role 키는 서버에만 있어 브라우저에 노출되지 않음
+// - 비밀번호는 서버에서 PBKDF2 해시 처리 (로그인 시 평문→해시 자동 전환)
+// ============================================================
 
 const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_bp4Fza--AQ9Kjw3n-60XjQ__oXq1DeR';
+const SUPABASE_ANON_KEY = 'sb_publishable_bp4Fza--AQ9Kjw3n-60XjQ__oXq1DeR';
+const FN_URL = `${SUPABASE_URL}/functions/v1/tracker-data`;
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+async function callFn(action, params = {}) {
+  const res = await fetch(FN_URL, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action, params }),
+  });
+  let out;
+  try { out = await res.json(); } catch (_) { throw new Error('서버 응답을 읽지 못했습니다'); }
+  if (!res.ok || out.error) throw new Error(out.error || '서버 오류');
+  return out.data;
+}
 
-// 테이블 이름 상수 (tracker_ prefix로 다른 시스템과 분리)
+// 호환용: App.jsx가 `supabase`를 import하지만 직접 호출하지는 않음.
+// SDK를 더 이상 쓰지 않으므로 빈 placeholder를 내보내 import 오류를 방지.
+export const supabase = null;
+
+// 테이블 이름 상수 (호환용 — 외부에서 참조할 수 있어 유지)
 export const TABLES = {
   USERS: 'tracker_users',
   SUPERVISEES: 'tracker_supervisees',
   FIELDWORK_LOGS: 'tracker_fieldwork_logs',
-  SUPERVISION_LOGS: 'tracker_supervision_logs'
+  SUPERVISION_LOGS: 'tracker_supervision_logs',
 };
 
-// ============================================
-// 인증 (로그인)
-// ============================================
+// ── 인증 ───────────────────────────────────────────────────
 export const authLogin = async (userId, password) => {
-  const { data, error } = await supabase
-    .from(TABLES.USERS)
-    .select('*')
-    .eq('user_id', userId)
-    .eq('password', password)
-    .single();
-  
-  if (error || !data) {
-    return { success: false, error: '아이디 또는 비밀번호가 일치하지 않습니다' };
+  try {
+    return await callFn('authLogin', { userId, password });
+  } catch (e) {
+    return { success: false, error: '서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요' };
   }
-  
-  // 비활성 계정 체크 (관리자가 수동 차단한 경우)
-  if (data.is_active === false) {
-    return { success: false, error: '계정이 비활성화되었습니다. 검단ABA에 문의해주세요' };
-  }
-  
-  // 만료일 체크
-  if (data.expires_at && new Date(data.expires_at) < new Date()) {
-    return { success: false, error: '라이센스가 만료되었습니다. 검단ABA에 문의해주세요' };
-  }
-  
-  return { success: true, user: data };
 };
 
-// ============================================
-// 슈퍼바이지 CRUD
-// ============================================
+// ── 슈퍼바이지 CRUD ────────────────────────────────────────
 export const fetchSupervisees = async (userId) => {
-  const { data, error } = await supabase
-    .from(TABLES.SUPERVISEES)
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true });
-  
-  if (error) {
-    console.error('fetchSupervisees error:', error);
-    return [];
-  }
-  return data || [];
+  try { return await callFn('fetchSupervisees', { userId }); }
+  catch (e) { console.error('fetchSupervisees error:', e); return []; }
 };
 
 export const createSupervisee = async (userId, supervisee) => {
-  const { data, error } = await supabase
-    .from(TABLES.SUPERVISEES)
-    .insert({
-      user_id: userId,
-      name: supervisee.name,
-      exam_type: supervisee.examType || supervisee.exam_type || 'QASP-S',
-      main_supervisor: supervisee.mainSupervisor || supervisee.main_supervisor || '',
-      supervisors: supervisee.supervisors || [],
-      start_date: supervisee.startDate || supervisee.start_date || null
-    })
-    .select()
-    .single();
-  
-  if (error) {
-    console.error('createSupervisee error:', error);
-    return null;
-  }
-  return data;
+  try { return await callFn('createSupervisee', { userId, supervisee }); }
+  catch (e) { console.error('createSupervisee error:', e); return null; }
 };
 
 export const updateSupervisee = async (id, changes) => {
-  const dbChanges = {};
-  if ('name' in changes) dbChanges.name = changes.name;
-  if ('examType' in changes) dbChanges.exam_type = changes.examType;
-  if ('exam_type' in changes) dbChanges.exam_type = changes.exam_type;
-  if ('mainSupervisor' in changes) dbChanges.main_supervisor = changes.mainSupervisor;
-  if ('main_supervisor' in changes) dbChanges.main_supervisor = changes.main_supervisor;
-  if ('supervisors' in changes) dbChanges.supervisors = changes.supervisors;
-  if ('startDate' in changes) dbChanges.start_date = changes.startDate || null;
-  if ('start_date' in changes) dbChanges.start_date = changes.start_date || null;
-  dbChanges.updated_at = new Date().toISOString();
-  
-  const { error } = await supabase
-    .from(TABLES.SUPERVISEES)
-    .update(dbChanges)
-    .eq('id', id);
-  
-  if (error) console.error('updateSupervisee error:', error);
-  return !error;
+  try { await callFn('updateSupervisee', { id, changes }); return true; }
+  catch (e) { console.error('updateSupervisee error:', e); return false; }
 };
 
 export const deleteSupervisee = async (id) => {
-  const { error } = await supabase
-    .from(TABLES.SUPERVISEES)
-    .delete()
-    .eq('id', id);
-  
-  if (error) console.error('deleteSupervisee error:', error);
-  return !error;
+  try { await callFn('deleteSupervisee', { id }); return true; }
+  catch (e) { console.error('deleteSupervisee error:', e); return false; }
 };
 
-// ============================================
-// 필드워크 로그 CRUD
-// ============================================
+// ── 필드워크 로그 CRUD ─────────────────────────────────────
 export const fetchFieldworkLogs = async (superviseeId) => {
-  const { data, error } = await supabase
-    .from(TABLES.FIELDWORK_LOGS)
-    .select('*')
-    .eq('supervisee_id', superviseeId)
-    .order('date', { ascending: false });
-  
-  if (error) {
-    console.error('fetchFieldworkLogs error:', error);
-    return [];
-  }
-  // DB 컬럼 → 앱 사용 형식으로 변환
-  return (data || []).map(d => ({
-    id: d.id,
-    date: d.date,
-    startTime: d.start_time,
-    endTime: d.end_time,
-    direct: d.direct,
-    supervisor: d.supervisor,
-    activities: d.activities || [],
-    customActivities: d.custom_activities || []
-  }));
+  try { return await callFn('fetchFieldworkLogs', { superviseeId }); }
+  catch (e) { console.error('fetchFieldworkLogs error:', e); return []; }
 };
 
 export const createFieldworkLog = async (superviseeId, log) => {
-  const { data, error } = await supabase
-    .from(TABLES.FIELDWORK_LOGS)
-    .insert({
-      supervisee_id: superviseeId,
-      date: log.date || null,
-      start_time: log.startTime || '',
-      end_time: log.endTime || '',
-      direct: Number(log.direct) || 0,
-      supervisor: log.supervisor || '',
-      activities: log.activities || [],
-      custom_activities: log.customActivities || []
-    })
-    .select()
-    .single();
-  
-  if (error) {
-    console.error('createFieldworkLog error:', error);
-    return null;
-  }
-  return {
-    id: data.id,
-    date: data.date,
-    startTime: data.start_time,
-    endTime: data.end_time,
-    direct: data.direct,
-    supervisor: data.supervisor,
-    activities: data.activities || [],
-    customActivities: data.custom_activities || []
-  };
+  try { return await callFn('createFieldworkLog', { superviseeId, log }); }
+  catch (e) { console.error('createFieldworkLog error:', e); return null; }
 };
 
 export const updateFieldworkLog = async (id, changes) => {
-  const dbChanges = {};
-  if ('date' in changes) dbChanges.date = changes.date || null;
-  if ('startTime' in changes) dbChanges.start_time = changes.startTime;
-  if ('endTime' in changes) dbChanges.end_time = changes.endTime;
-  if ('direct' in changes) dbChanges.direct = Number(changes.direct) || 0;
-  if ('supervisor' in changes) dbChanges.supervisor = changes.supervisor;
-  if ('activities' in changes) dbChanges.activities = changes.activities;
-  if ('customActivities' in changes) dbChanges.custom_activities = changes.customActivities;
-  
-  const { error } = await supabase
-    .from(TABLES.FIELDWORK_LOGS)
-    .update(dbChanges)
-    .eq('id', id);
-  
-  if (error) console.error('updateFieldworkLog error:', error);
-  return !error;
+  try { await callFn('updateFieldworkLog', { id, changes }); return true; }
+  catch (e) { console.error('updateFieldworkLog error:', e); return false; }
 };
 
 export const deleteFieldworkLog = async (id) => {
-  const { error } = await supabase
-    .from(TABLES.FIELDWORK_LOGS)
-    .delete()
-    .eq('id', id);
-  
-  if (error) console.error('deleteFieldworkLog error:', error);
-  return !error;
+  try { await callFn('deleteFieldworkLog', { id }); return true; }
+  catch (e) { console.error('deleteFieldworkLog error:', e); return false; }
 };
 
-// ============================================
-// 슈퍼비전 로그 CRUD
-// ============================================
+// ── 슈퍼비전 로그 CRUD ─────────────────────────────────────
 export const fetchSupervisionLogs = async (superviseeId) => {
-  const { data, error } = await supabase
-    .from(TABLES.SUPERVISION_LOGS)
-    .select('*')
-    .eq('supervisee_id', superviseeId)
-    .order('date', { ascending: false });
-  
-  if (error) {
-    console.error('fetchSupervisionLogs error:', error);
-    return [];
-  }
-  return (data || []).map(d => ({
-    id: d.id,
-    date: d.date,
-    hours: d.hours,
-    type: d.type,
-    supervisor: d.supervisor,
-    notes: d.notes
-  }));
+  try { return await callFn('fetchSupervisionLogs', { superviseeId }); }
+  catch (e) { console.error('fetchSupervisionLogs error:', e); return []; }
 };
 
 export const createSupervisionLog = async (superviseeId, log) => {
-  const { data, error } = await supabase
-    .from(TABLES.SUPERVISION_LOGS)
-    .insert({
-      supervisee_id: superviseeId,
-      date: log.date || null,
-      hours: Number(log.hours) || 0,
-      type: log.type || 'individual',
-      supervisor: log.supervisor || '',
-      notes: log.notes || ''
-    })
-    .select()
-    .single();
-  
-  if (error) {
-    console.error('createSupervisionLog error:', error);
-    return null;
-  }
-  return {
-    id: data.id,
-    date: data.date,
-    hours: data.hours,
-    type: data.type,
-    supervisor: data.supervisor,
-    notes: data.notes
-  };
+  try { return await callFn('createSupervisionLog', { superviseeId, log }); }
+  catch (e) { console.error('createSupervisionLog error:', e); return null; }
 };
 
 export const updateSupervisionLog = async (id, changes) => {
-  const dbChanges = {};
-  if ('date' in changes) dbChanges.date = changes.date || null;
-  if ('hours' in changes) dbChanges.hours = Number(changes.hours) || 0;
-  if ('type' in changes) dbChanges.type = changes.type;
-  if ('supervisor' in changes) dbChanges.supervisor = changes.supervisor;
-  if ('notes' in changes) dbChanges.notes = changes.notes;
-  
-  const { error } = await supabase
-    .from(TABLES.SUPERVISION_LOGS)
-    .update(dbChanges)
-    .eq('id', id);
-  
-  if (error) console.error('updateSupervisionLog error:', error);
-  return !error;
+  try { await callFn('updateSupervisionLog', { id, changes }); return true; }
+  catch (e) { console.error('updateSupervisionLog error:', e); return false; }
 };
 
 export const deleteSupervisionLog = async (id) => {
-  const { error } = await supabase
-    .from(TABLES.SUPERVISION_LOGS)
-    .delete()
-    .eq('id', id);
-  
-  if (error) console.error('deleteSupervisionLog error:', error);
-  return !error;
+  try { await callFn('deleteSupervisionLog', { id }); return true; }
+  catch (e) { console.error('deleteSupervisionLog error:', e); return false; }
 };
 
-// ============================================
-// 활성 슈퍼바이지 ID (localStorage)
-// ============================================
+// ── 활성 슈퍼바이지 ID (localStorage — 기기 로컬 유지) ─────
 export const getActiveSuperviseeId = (userId) => {
-  try {
-    return localStorage.getItem(`tracker_active_sv_${userId}`);
-  } catch (e) {
-    return null;
-  }
+  try { return localStorage.getItem(`tracker_active_sv_${userId}`); }
+  catch (e) { return null; }
 };
 
 export const setActiveSuperviseeId = (userId, superviseeId) => {
   try {
-    if (superviseeId) {
-      localStorage.setItem(`tracker_active_sv_${userId}`, superviseeId);
-    } else {
-      localStorage.removeItem(`tracker_active_sv_${userId}`);
-    }
+    if (superviseeId) localStorage.setItem(`tracker_active_sv_${userId}`, superviseeId);
+    else localStorage.removeItem(`tracker_active_sv_${userId}`);
   } catch (e) {}
 };
 
-// ============================================
-// 관리자 - 사용자 관리 함수
-// ============================================
+// ── 관리자: 사용자 관리 ────────────────────────────────────
 export const fetchAllUsers = async () => {
-  const { data, error } = await supabase
-    .from(TABLES.USERS)
-    .select('*')
-    .order('created_at', { ascending: false });
-  
-  if (error) {
-    console.error('fetchAllUsers error:', error);
-    return [];
-  }
-  return data || [];
+  try { return await callFn('fetchAllUsers', {}); }
+  catch (e) { console.error('fetchAllUsers error:', e); return []; }
 };
 
 export const createUser = async (userData) => {
-  const { data, error } = await supabase
-    .from(TABLES.USERS)
-    .insert({
-      user_id: userData.user_id,
-      password: userData.password,
-      name: userData.name,
-      role: userData.role || 'user',
-      expires_at: userData.expires_at || null,
-      is_active: userData.is_active !== false // 기본 true
-    })
-    .select()
-    .single();
-  
-  if (error) {
-    console.error('createUser error:', error);
-    return { success: false, error: error.message };
-  }
-  return { success: true, user: data };
+  try { return await callFn('createUser', { userData }); }
+  catch (e) { console.error('createUser error:', e); return { success: false, error: e.message }; }
 };
 
 export const updateUser = async (id, changes) => {
-  const dbChanges = { ...changes, updated_at: new Date().toISOString() };
-  delete dbChanges.id;
-  delete dbChanges.created_at;
-  
-  const { error } = await supabase
-    .from(TABLES.USERS)
-    .update(dbChanges)
-    .eq('id', id);
-  
-  if (error) {
-    console.error('updateUser error:', error);
-    return { success: false, error: error.message };
-  }
-  return { success: true };
+  try { return await callFn('updateUser', { id, changes }); }
+  catch (e) { console.error('updateUser error:', e); return { success: false, error: e.message }; }
 };
 
-// 사용자 활성/비활성 토글
 export const toggleUserActive = async (id, isActive) => {
-  const { error } = await supabase
-    .from(TABLES.USERS)
-    .update({ is_active: isActive, updated_at: new Date().toISOString() })
-    .eq('id', id);
-  
-  if (error) {
-    console.error('toggleUserActive error:', error);
-    return false;
-  }
-  return true;
+  try { await callFn('toggleUserActive', { id, isActive }); return true; }
+  catch (e) { console.error('toggleUserActive error:', e); return false; }
 };
 
 export const deleteUser = async (id) => {
-  const { error } = await supabase
-    .from(TABLES.USERS)
-    .delete()
-    .eq('id', id);
-  
-  if (error) {
-    console.error('deleteUser error:', error);
-    return false;
-  }
-  return true;
+  try { await callFn('deleteUser', { id }); return true; }
+  catch (e) { console.error('deleteUser error:', e); return false; }
 };
 
-// 특정 사용자의 슈퍼바이지/로그 통계 + 진행률 조회
 export const fetchUserStats = async (userId) => {
-  const { data: svs } = await supabase
-    .from(TABLES.SUPERVISEES)
-    .select('id, name, exam_type')
-    .eq('user_id', userId);
-  
-  if (!svs || svs.length === 0) {
-    return { 
-      superviseeCount: 0, fieldworkCount: 0, supervisionCount: 0, 
-      supervisees: [], 
-      totalFwHours: 0, totalSvHours: 0, 
-      progress: 0, examType: null,
-      target: 0
-    };
+  try { return await callFn('fetchUserStats', { userId }); }
+  catch (e) {
+    console.error('fetchUserStats error:', e);
+    return { superviseeCount: 0, fieldworkCount: 0, supervisionCount: 0, supervisees: [],
+             totalFwHours: 0, totalSvHours: 0, progress: 0, examType: null, target: 0 };
   }
-  
-  const svIds = svs.map(s => s.id);
-  
-  // 카운트
-  const [{ count: fwCount }, { count: svCount }] = await Promise.all([
-    supabase.from(TABLES.FIELDWORK_LOGS).select('*', { count: 'exact', head: true }).in('supervisee_id', svIds),
-    supabase.from(TABLES.SUPERVISION_LOGS).select('*', { count: 'exact', head: true }).in('supervisee_id', svIds)
-  ]);
-  
-  // 실제 시간 합계 (필드워크 = end-start, 슈퍼비전 = hours)
-  const { data: fwLogs } = await supabase
-    .from(TABLES.FIELDWORK_LOGS)
-    .select('start_time, end_time')
-    .in('supervisee_id', svIds);
-  
-  const { data: svLogs } = await supabase
-    .from(TABLES.SUPERVISION_LOGS)
-    .select('hours')
-    .in('supervisee_id', svIds);
-  
-  // 필드워크 시간 합 (start~end)
-  const totalFwHours = (fwLogs || []).reduce((sum, l) => {
-    if (!l.start_time || !l.end_time) return sum;
-    const [sh, sm] = l.start_time.split(':').map(Number);
-    const [eh, em] = l.end_time.split(':').map(Number);
-    let mins = (eh * 60 + em) - (sh * 60 + sm);
-    if (mins < 0) mins += 24 * 60;
-    return sum + mins / 60;
-  }, 0);
-  
-  const totalSvHours = (svLogs || []).reduce((s, l) => s + (Number(l.hours) || 0), 0);
-  
-  // 첫 번째 슈퍼바이지의 exam_type 기준 (일반 사용자는 1명만)
-  const examType = svs[0]?.exam_type || 'QASP-S';
-  const target = examType === 'QBA' ? 2000 : 1000;
-  const progress = target > 0 ? (totalFwHours / target) * 100 : 0;
-  
-  return {
-    superviseeCount: svs.length,
-    fieldworkCount: fwCount || 0,
-    supervisionCount: svCount || 0,
-    supervisees: svs,
-    totalFwHours,
-    totalSvHours,
-    progress,
-    examType,
-    target
-  };
 };
-
