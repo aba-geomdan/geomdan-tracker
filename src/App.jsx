@@ -85,7 +85,9 @@ export default function App() {
   // 로그인 상태 복원 (페이지 새로고침해도 유지)
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('geomdan_tracker_user_data');
+      // 과거 localStorage 자동로그인 흔적 제거 (보안)
+      try { localStorage.removeItem('geomdan_tracker_user_data'); } catch (e2) {}
+      const saved = sessionStorage.getItem('geomdan_tracker_user_data');
       if (saved) {
         const user = JSON.parse(saved);
         if (user && user.id && user.user_id) {
@@ -99,7 +101,7 @@ export default function App() {
   const isAuthenticated = !!loggedInUser;
 
   const handleLogin = async (user) => {
-    try { localStorage.setItem('geomdan_tracker_user_data', JSON.stringify(user)); } catch (e) {}
+    try { sessionStorage.setItem('geomdan_tracker_user_data', JSON.stringify(user)); } catch (e) {}
     setLoggedInUser(user);
   };
 
@@ -139,6 +141,7 @@ export default function App() {
     const ok = await window.appConfirm('로그아웃하시겠습니까?\n클라우드에 저장된 데이터는 그대로 유지됩니다.', '로그아웃');
     if (ok) {
       try {
+        sessionStorage.removeItem('geomdan_tracker_user_data');
         localStorage.removeItem('geomdan_tracker_user_data');
         localStorage.removeItem('geomdan_tracker_user');
         localStorage.removeItem('geomdan_tracker_auth');
