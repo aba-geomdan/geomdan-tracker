@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import {
   authLogin,
+  authLogout,
   fetchSupervisees, createSupervisee, updateSupervisee, deleteSupervisee,
   fetchFieldworkLogs, createFieldworkLog, updateFieldworkLog, deleteFieldworkLog,
   fetchSupervisionLogs, createSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
@@ -165,6 +166,7 @@ export default function App() {
   const handleLogout = async () => {
     const ok = await window.appConfirm('로그아웃하시겠습니까?\n클라우드에 저장된 데이터는 그대로 유지됩니다.', '로그아웃');
     if (ok) {
+      try { await authLogout(); } catch (e) {}
       try {
         sessionStorage.removeItem('geomdan_tracker_user_data');
         localStorage.removeItem('geomdan_tracker_user_data');
