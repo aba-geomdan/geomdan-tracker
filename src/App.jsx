@@ -10,6 +10,31 @@ import {
 } from './supabase';
 
 // ============================================
+// 도메인 가드 (무단 배포 방지)
+// ============================================
+(function domainGuard() {
+  try {
+    var host = window.location.hostname;
+    var allowed = (
+      host === 'aba-geomdan.github.io' ||
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '' ||
+      /\.local$/.test(host)
+    );
+    if (!allowed) {
+      document.documentElement.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#FFF0F3;color:#D4728A;font-family:sans-serif;text-align:center;line-height:1.8;">' +
+        '<div><h1>접근할 수 없는 페이지</h1><p>검단ABA언어행동연구소의 지적재산입니다.</p></div>' +
+        '</div>';
+      throw new Error('Unauthorized host');
+    }
+  } catch (e) {
+    if (e && e.message === 'Unauthorized host') throw e;
+  }
+})();
+
+// ============================================
 // QABA 공식 규정 기준 데이터
 // ============================================
 const EXAM_DATA = {
