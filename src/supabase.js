@@ -9,8 +9,9 @@
 // - 하드코딩 비번 없음. 세션은 sessionStorage.
 // ============================================================
 
-const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || 'https://vdubgrxwijydwfabwpnk.supabase.co';
-const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_bp4Fza--AQ9Kjw3n-60XjQ__oXq1DeR';
+// 2026-11-15 트래커 전용 서버로 옮김 (센터 서버와 완전히 분리 — 계정·기록이 서로 섞이지 않음)
+export const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || 'https://emylattgfqezmvkdpxzp.supabase.co';
+export const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_Win7wosrPbT4sJDisYdDQw_y9RrhlNn';
 
 const EMAIL_DOMAIN = 'geomdan.local';
 const FN_DATA = `${SUPABASE_URL}/functions/v1/tracker-data`;
@@ -39,6 +40,10 @@ function getStoredSession() {
     return s;
   } catch (e) { return null; }
 }
+// 지금 로그인한 사람의 고유번호 (연수시간 탭에서 씀)
+export function getSessionUserId() {
+  try { const s = JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || 'null'); return s?.user?.id || null; } catch (e) { return null; }
+}
 function saveSession(session) {
   try {
     if (session) sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
@@ -59,7 +64,7 @@ async function refreshSession(refreshToken) {
     return null;
   } catch (e) { return null; }
 }
-async function getValidAccessToken() {
+export async function getValidAccessToken() {
   const session = getStoredSession();
   if (session?.access_token) return session.access_token;
   const raw = (() => { try { return sessionStorage.getItem(AUTH_SESSION_KEY); } catch (e) { return null; } })();
@@ -130,8 +135,10 @@ export const authLogin = async (userId, password) => {
       return { success: false, error: '아이디 또는 비밀번호가 일치하지 않습니다' };
     }
     const meta = data.user?.user_metadata || {};
+    const appMeta = data.user?.app_metadata || {};
+    const role = appMeta.role || meta.role || 'user';
     // 정지 계정 차단 (is_active === false 만 차단, 없으면 활성 간주)
-    if (meta.is_active === false) {
+    if ((appMeta.is_active ?? meta.is_active) === false) {
       saveSession(null);
       return { success: false, error: '계정이 비활성화되었습니다. 검단ABA에 문의해주세요' };
     }
@@ -147,8 +154,10 @@ export const authLogin = async (userId, password) => {
         id: data.user.id,                                  // uid
         user_id: meta.user_id || emailToId(data.user.email), // 원래 아이디
         name: meta.display_name || meta.name || emailToId(data.user.email),
-        role: meta.role || 'user',
+        role: role === 'admin' ? 'admin' : 'user',
         expires_at: meta.expires_at || null,
+        // 연수시간(CEU) 탭: 관리자는 늘 보이고, 다른 사람은 관리자가 켜 준 경우에만
+        ceu: role === 'admin' || appMeta.ceu === true,
       },
     };
   } catch (e) {
@@ -248,6 +257,7 @@ export const fetchAllUsers = async () => {
       role: u.role === 'admin' ? 'admin' : 'user',
       is_active: u.is_active !== false,
       expires_at: u.expires_at || null,
+      ceu: u.ceu === true,
       created_at: u.created_at,
     }));
   } catch (e) { console.error('fetchAllUsers error:', e); return []; }
@@ -301,6 +311,14 @@ export const toggleUserActive = async (id, isActive) => {
     const out = await callAdmin({ action: 'set_active', user_id: id, is_active: isActive });
     return !!out._ok;
   } catch (e) { console.error('toggleUserActive error:', e); return false; }
+};
+
+// 연수시간(CEU) 탭 보이기/숨기기 (관리자만)
+export const setUserCeu = async (id, on) => {
+  try {
+    const out = await callAdmin({ action: 'set_ceu', user_id: id, ceu: !!on });
+    return !!out._ok && !out.error;
+  } catch (e) { console.error('setUserCeu error:', e); return false; }
 };
 
 export const deleteUser = async (id) => {
