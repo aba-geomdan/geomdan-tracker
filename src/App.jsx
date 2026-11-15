@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import CeuTab from './CeuTab.jsx';
 import {
   authLogin,
   authLogout,
@@ -7,7 +8,7 @@ import {
   fetchFieldworkLogs, createFieldworkLog, updateFieldworkLog, deleteFieldworkLog,
   fetchSupervisionLogs, createSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
   getActiveSuperviseeId, setActiveSuperviseeId,
-  fetchAllUsers, createUser, updateUser, deleteUser, fetchUserStats, toggleUserActive
+  fetchAllUsers, createUser, updateUser, deleteUser, fetchUserStats, toggleUserActive, setUserCeu
 } from './supabase';
 
 // ============================================
@@ -1114,7 +1115,9 @@ export default function App() {
           ...(loggedInUser?.role === 'admin' && data.supervisees && data.supervisees.length >= 2 ? [{ id: 'overview', l: '👥 전체 현황' }] : []),
           { id: 'fieldwork', l: '📋 필드워크' },
           { id: 'supervision', l: '🎓 슈퍼비전' },
-          { id: 'info', l: '📚 시험 정보' }
+          { id: 'info', l: '📚 시험 정보' },
+          // 연수시간(CEU): 관리자가 켜 준 사람에게만 보임
+          ...(loggedInUser?.ceu ? [{ id: 'ceu', l: '🏅 연수시간(CEU)' }] : [])
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
                   style={{ padding: '14px 22px', fontSize: 14, color: tab === t.id ? C.pinkDeep : C.grayText, background: 'transparent', border: 'none',
@@ -1137,7 +1140,9 @@ export default function App() {
           })()}
         </datalist>
 
-        {!activeSupervisee ? (
+        {tab === 'ceu' && loggedInUser?.ceu ? (
+          <CeuTab me={{ id: loggedInUser.id, name: loggedInUser.name || loggedInUser.user_id }} />
+        ) : !activeSupervisee ? (
           <EmptyStateNoSupervisee onAdd={() => setShowManageSv(true)} />
         ) : (
           <>
@@ -3574,6 +3579,7 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                   <th style={thStyleAdm}>아이디</th>
                   <th style={thStyleAdm}>상태</th>
                   <th style={thStyleAdm}>권한</th>
+                  <th style={thStyleAdm} title="누르면 그 사람 화면의 🏅 연수시간(CEU) 탭을 보이거나 숨깁니다">CEU 탭</th>
                   <th style={thStyleAdm}>만료일</th>
                   <th style={thStyleAdm}>슈퍼바이지/기록</th>
                   <th style={thStyleAdm}>생성일</th>
@@ -3602,6 +3608,23 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                         {u.role === 'admin'
                           ? <span style={{ fontSize: 11, padding: '3px 8px', background: '#FFF4E6', color: C.goldDeep, borderRadius: 10, fontWeight: 600 }}>관리자</span>
                           : <span style={{ fontSize: 11, padding: '3px 8px', background: C.pinkSoft, color: C.plumDark, borderRadius: 10, fontWeight: 600 }}>사용자</span>}
+                      </td>
+                      <td style={tdStyleAdm}>
+                        {u.role === 'admin' ? (
+                          <span title="관리자는 늘 보입니다" style={{ fontSize: 11, padding: '4px 10px', background: C.pinkDeep, color: '#fff', borderRadius: 12, fontWeight: 700, opacity: 0.6 }}>✓ 보임</span>
+                        ) : (
+                          <button onClick={async () => {
+                            const ok = await setUserCeu(u.id, !u.ceu);
+                            if (ok) loadUsers();
+                            else await window.appAlert('CEU 탭 설정을 바꾸지 못했습니다');
+                          }}
+                                  title={u.ceu ? '누르면 숨김' : '누르면 보임'}
+                                  style={u.ceu
+                                    ? { fontSize: 11, padding: '4px 10px', background: C.pinkDeep, color: '#fff', border: 'none', borderRadius: 12, fontWeight: 700, cursor: 'pointer' }
+                                    : { fontSize: 11, padding: '4px 10px', background: '#fff', color: '#999', border: '1px solid #ddd', borderRadius: 12, cursor: 'pointer' }}>
+                            {u.ceu ? '✓ 보임' : '숨김'}
+                          </button>
+                        )}
                       </td>
                       <td style={{ ...tdStyleAdm, color: expStatus.color, fontWeight: expStatus.status === 'expired' ? 700 : 500 }}>
                         {expStatus.label}
