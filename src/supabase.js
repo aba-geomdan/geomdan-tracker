@@ -329,7 +329,8 @@ export const deleteUser = async (id) => {
 };
 
 export const fetchUserStats = async (userId) => {
-  try { return await callData('fetchUserStats', {}); }
+  // 관리자 페이지에서 사람마다 그 사람 숫자를 보이게 (예전에는 모두 내 숫자가 나왔음)
+  try { return await callData('fetchUserStats', userId ? { targetUid: userId } : {}); }
   catch (e) {
     console.error('fetchUserStats error:', e);
     return { superviseeCount: 0, fieldworkCount: 0, supervisionCount: 0, supervisees: [],
