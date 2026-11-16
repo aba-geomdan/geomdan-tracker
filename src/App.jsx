@@ -414,7 +414,7 @@ export default function App() {
 
     // ============ Sheet 1: Fieldwork Log ============
     const fwSheet = [];
-    fwSheet.push(['검단ABA 자격시간 트래커 - FIELDWORK LOG (필드워크 기록지)']);
+    fwSheet.push(['검단ABA 자격 관리 - FIELDWORK LOG (필드워크 기록지)']);
     fwSheet.push([]);
     fwSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
     fwSheet.push(['시험 유형', activeSupervisee.examType, '', '보고서 작성일', today]);
@@ -504,7 +504,7 @@ export default function App() {
 
     // ============ Sheet 2: Supervision Log ============
     const svSheet = [];
-    svSheet.push(['검단ABA 자격시간 트래커 - SUPERVISION LOG (슈퍼비전 기록지)']);
+    svSheet.push(['검단ABA 자격 관리 - SUPERVISION LOG (슈퍼비전 기록지)']);
     svSheet.push([]);
     svSheet.push(['Supervisee (슈퍼바이지)', supervisee, '', 'Supervisor (메인 슈퍼바이저)', mainSv]);
     svSheet.push(['시험 유형', activeSupervisee.examType, '', '보고서 작성일', today]);
@@ -599,7 +599,7 @@ export default function App() {
     });
 
     const bsSheet = [];
-    bsSheet.push(['검단ABA 자격시간 트래커 - 슈퍼바이저별 현황']);
+    bsSheet.push(['검단ABA 자격 관리 - 슈퍼바이저별 현황']);
     bsSheet.push([]);
     bsSheet.push(['보고서 작성일', today]);
     bsSheet.push([]);
@@ -656,7 +656,7 @@ export default function App() {
 
     // ============ Sheet 4: Monthly Summary (월별 요약) ============
     const msSheet = [];
-    msSheet.push(['검단ABA 자격시간 트래커 - 월별 요약']);
+    msSheet.push(['검단ABA 자격 관리 - 월별 요약']);
     msSheet.push([]);
     msSheet.push(['Supervisee', supervisee, '', '시험 유형', activeSupervisee.examType]);
     msSheet.push(['보고서 작성일', today]);
@@ -1044,7 +1044,7 @@ export default function App() {
             <img src={`${import.meta.env.BASE_URL}logo.png`} alt="검단ABA"
                  style={{ width: 56, height: 56, objectFit: 'contain', flexShrink: 0 }} />
             <div>
-              <h1 style={{ margin: 0, fontSize: 24, color: C.pinkDeep, fontWeight: 700, letterSpacing: '-0.02em' }}>검단ABA 자격시간 트래커</h1>
+              <h1 style={{ margin: 0, fontSize: 24, color: C.pinkDeep, fontWeight: 700, letterSpacing: '-0.02em' }}>검단ABA 자격 관리</h1>
               <p style={{ margin: '6px 0 0 0', fontSize: 13, color: C.plumDark }}>QBA · QASP-S 자격 준비 보조</p>
             </div>
           </div>
@@ -1321,7 +1321,7 @@ function WelcomeCard({ examType, superviseeName }) {
         🎉 환영합니다{superviseeName ? `, ${superviseeName}님!` : '!'}
       </h2>
       <p style={{ margin: '0 0 20px 0', fontSize: 14, color: C.plumDark, lineHeight: 1.7 }}>
-        자격 준비, 한 걸음씩 함께 가요. <strong>{examType}</strong> 자격 취득까지 이 트래커가 도와드릴게요.<br/>
+        자격 준비, 한 걸음씩 함께 가요. <strong>{examType}</strong> 자격 취득까지 검단ABA 자격 관리가 도와드릴게요.<br/>
         <span style={{ fontSize: 13, color: C.grayText }}>아래 3단계로 시작해보세요 ✨</span>
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
@@ -3511,7 +3511,7 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                 🔐 관리자 페이지
               </h1>
               <p style={{ margin: '4px 0 0 0', fontSize: 12, color: C.plumDark }}>
-                검단ABA 자격시간 트래커 · 사용자 관리
+                검단ABA 자격 관리 · 사용자 관리
               </p>
             </div>
           </div>
@@ -3711,7 +3711,7 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
             if (result.success) {
               await loadUsers();
               setShowAddModal(false);
-              await window.appAlert(`✅ 사용자가 추가되었습니다.\n\n아이디: ${form.user_id}\n비밀번호: ${form.password}\n\n📋 카톡 발송용:\n검단ABA 자격시간 트래커 계정 안내\n🔗 https://aba-geomdan.github.io/geomdan-tracker/\n👤 아이디: ${form.user_id}\n🔑 비밀번호: ${form.password}${form.expires_at ? `\n📅 유효기간: ${form.expires_at}까지` : ''}`);
+              await window.appAlert(`✅ 사용자가 추가되었습니다.\n\n아이디: ${form.user_id}\n비밀번호: ${form.password}\n\n📋 카톡 발송용:\n검단ABA 자격 관리 계정 안내\n🔗 https://aba-geomdan.github.io/geomdan-tracker/\n👤 아이디: ${form.user_id}\n🔑 비밀번호: ${form.password}${form.expires_at ? `\n📅 유효기간: ${form.expires_at}까지` : ''}`);
             } else {
               await window.appAlert('추가 실패: ' + (result.error || '오류'));
             }
@@ -4147,7 +4147,7 @@ function LoginScreen({ onLogin }) {
         <img src={`${import.meta.env.BASE_URL}logo.png`} alt="검단ABA"
              style={{ width: 80, height: 80, objectFit: 'contain', marginBottom: 12 }} />
         <h1 style={{ margin: '0 0 4px 0', fontSize: 22, fontWeight: 700, color: C.pinkDeep, letterSpacing: '-0.5px' }}>
-          검단ABA 자격시간 트래커
+          검단ABA 자격 관리
         </h1>
         <p style={{ margin: 0, fontSize: 13, color: C.grayText }}>
           QABA QBA·QASP-S 슈퍼비전 시간 관리 시스템
@@ -4681,7 +4681,7 @@ function GuideModal({ onClose }) {
           <div style={{ background: C.pinkPale, padding: 14, borderRadius: 10, marginBottom: 20 }}>
             <strong style={{ color: C.pinkDeep, fontSize: 14 }}>👋 환영합니다!</strong>
             <p style={{ margin: '6px 0 0 0', fontSize: 13 }}>
-              이 트래커는 <strong>QABA (QBA·QASP-S) 자격 준비</strong>를 도와드려요.<br/>
+              이 앱은 <strong>QABA (QBA·QASP-S) 자격 준비</strong>를 도와드려요.<br/>
               매일 기록만 잘 해두면 자동으로 진행률·5% 충족 여부를 계산해드립니다.
             </p>
           </div>
