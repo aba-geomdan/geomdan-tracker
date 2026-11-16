@@ -151,7 +151,7 @@ export async function importFromOldCeu(email, password, onStep) {
   const step = (t) => { try { onStep && onStep(t); } catch (e) {} };
   const newUid = getSessionUserId();
   const newToken = await getValidAccessToken();
-  if (!newUid || !newToken) return { error: '트래커 로그인이 끝났습니다. 다시 로그인해 주세요.' };
+  if (!newUid || !newToken) return { error: '로그인 시간이 끝났습니다. 다시 로그인해 주세요.' };
 
   // 1) 예전 앱 로그인
   step('예전 CEU 앱에 로그인하는 중…');
