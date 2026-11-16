@@ -8,8 +8,10 @@ import {
   fetchFieldworkLogs, createFieldworkLog, updateFieldworkLog, deleteFieldworkLog,
   fetchSupervisionLogs, createSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
   getActiveSuperviseeId, setActiveSuperviseeId,
-  fetchAllUsers, createUser, updateUser, deleteUser, fetchUserStats, toggleUserActive, setUserCeu
+  fetchAllUsers, createUser, updateUser, deleteUser, fetchUserStats, toggleUserActive, setUserCeu,
+  createSuperviseeFor, fetchAllSupervisees
 } from './supabase';
+import { loadMyData as loadCeuData, saveMyData as saveCeuData } from './ceuApi.js';
 
 // ============================================
 // 도메인 가드 (무단 배포 방지)
@@ -186,6 +188,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [tab, setTab] = useState('dashboard');
+  const [ceuKey, setCeuKey] = useState(0); // 백업 복원으로 CEU가 바뀌면 CEU 탭을 새로 불러옴
   const [adminViewMode, setAdminViewMode] = useState('admin'); // 'admin' | 'user-preview' (관리자가 일반 사용자 화면 미리보기)
   const [showGuide, setShowGuide] = useState(false);
   const [showManageSv, setShowManageSv] = useState(false);
@@ -198,13 +201,25 @@ export default function App() {
   };
 
   // 로그인 시 슈퍼바이지 목록 + 각 슈퍼바이지의 로그 fetch
-  const reloadAllData = async (userId, userName, userRole) => {
+  const reloadAllData = async (userId, userName, userRole, userCeu) => {
     setLoading(true);
     try {
-      const supList = await fetchSupervisees(userId);
+      let supList = await fetchSupervisees(userId);
+      // 관리자: 내가 추가한 사용자들의 기록장도 같이 (👤 고르는 칸에서 '사용자 기록장'으로 보임)
+      if (userRole === 'admin') {
+        const [all, users] = await Promise.all([fetchAllSupervisees(), fetchAllUsers()]);
+        const nameOf = {};
+        (users || []).forEach(u => { nameOf[u.id] = u.name || u.user_id; });
+        const others = (all || []).filter(sv => sv.owner_uid && sv.owner_uid !== userId)
+          .map(sv => ({ ...sv, _ownerName: nameOf[sv.owner_uid] || '사용자' }));
+        supList = [...supList, ...others];
+      }
       
       // 🌟 일반 사용자(user)인데 슈퍼바이지가 없으면 자동 생성 (1계정=1자격 정책)
-      if (supList.length === 0 && userRole !== 'admin') {
+      //    단, 연수시간(CEU)만 쓰는 사람(CEU 탭 켜짐)은 만들지 않고 CEU 탭부터 보여 줌
+      if (supList.length === 0 && userRole !== 'admin' && userCeu) {
+        setTab('ceu');
+      } else if (supList.length === 0 && userRole !== 'admin') {
         const created = await createSupervisee(userId, {
           name: userName || '내 자격',
           examType: 'QASP-S'
@@ -227,6 +242,7 @@ export default function App() {
           mainSupervisor: sv.main_supervisor || '',
           supervisors: sv.supervisors || [],
           startDate: sv.start_date || '',
+          ownerName: sv._ownerName || null, // 다른 사용자 기록장이면 그 사람 이름
           fieldworkLogs: fwLogs,
           supervisionLogs: svLogs
         };
@@ -252,7 +268,7 @@ export default function App() {
   // 로그인 후 자동 데이터 로딩
   useEffect(() => {
     if (loggedInUser?.id) {
-      reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role);
+      reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu);
     }
   }, [loggedInUser?.id]);
 
@@ -371,13 +387,19 @@ export default function App() {
   };
 
   // 백업 다운로드 (활성 슈퍼바이지의 데이터만)
-  const exportData = () => {
+  const exportData = async () => {
+    // 연수시간(CEU) 기록도 같이 (CEU 탭을 쓰는 사람만)
+    let ceu = null;
+    if (loggedInUser?.ceu) {
+      try { const d = await loadCeuData(); if (d && !d.error) ceu = d; } catch (e) {}
+    }
     const exportPayload = {
       version: 'cloud-v1',
       exportedAt: new Date().toISOString(),
       user: { id: loggedInUser?.id, user_id: loggedInUser?.user_id, name: loggedInUser?.name },
       supervisees: supervisees,
-      activeSuperviseeId: activeSuperviseeIdState
+      activeSuperviseeId: activeSuperviseeIdState,
+      ...(ceu ? { ceu } : {})
     };
     const json = JSON.stringify(exportPayload, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -749,7 +771,7 @@ export default function App() {
           showToast('올바른 백업 파일이 아닙니다', 'danger');
           return;
         }
-        if (!await window.appConfirm('이 백업 파일의 내용을 클라우드에 추가할까요?\n(기존 데이터에 추가됩니다. 중복 방지를 위해 백업 전 클라우드 데이터를 정리하세요)')) {
+        if (!await window.appConfirm('이 백업 파일의 내용을 지금 기록에 더할까요?\n(이미 있는 같은 기록은 건너뜁니다. 지금 기록은 지워지지 않습니다.)', '백업 복원')) {
           return;
         }
 
@@ -770,21 +792,18 @@ export default function App() {
         }
 
         setLoading(true);
-        let importedCount = 0;
-        for (const sv of svList) {
-          // 1. 슈퍼바이지 생성
-          const created = await createSupervisee(loggedInUser.id, {
-            name: sv.name,
-            examType: sv.examType || sv.exam_type || 'QASP-S',
-            mainSupervisor: sv.mainSupervisor || sv.main_supervisor || '',
-            supervisors: sv.supervisors || [],
-            startDate: sv.startDate || sv.start_date || ''
-          });
-          if (!created) continue;
-
-          // 2. 필드워크 로그 일괄 추가
+        let importedCount = 0, addedLogs = 0, skippedLogs = 0, skippedOthers = 0;
+        const isAdminUser = loggedInUser?.role === 'admin';
+        // 이미 있는 기록과 같으면 다시 넣지 않음 (같은 백업을 두 번 복원해도 겹치지 않게)
+        const fwKey = (l) => [l.date, l.startTime || l.start_time || '', l.endTime || l.end_time || '', l.supervisor || ''].join('|');
+        const svKey = (l) => [l.date, Number(l.hours) || 0, l.type || '', l.supervisor || ''].join('|');
+        const addLogs = async (targetId, existing, sv) => {
+          const fwSeen = new Set((existing?.fieldworkLogs || []).map(fwKey));
+          const svSeen = new Set((existing?.supervisionLogs || []).map(svKey));
           for (const log of (sv.fieldworkLogs || [])) {
-            await createFieldworkLog(created.id, {
+            if (fwSeen.has(fwKey(log))) { skippedLogs++; continue; }
+            fwSeen.add(fwKey(log));
+            await createFieldworkLog(targetId, {
               date: log.date,
               startTime: log.startTime || log.start_time,
               endTime: log.endTime || log.end_time,
@@ -793,23 +812,72 @@ export default function App() {
               activities: log.activities || [],
               customActivities: log.customActivities || log.custom_activities || []
             });
+            addedLogs++;
           }
-
-          // 3. 슈퍼비전 로그 일괄 추가
           for (const log of (sv.supervisionLogs || [])) {
-            await createSupervisionLog(created.id, {
-              date: log.date,
-              hours: log.hours,
-              type: log.type,
-              supervisor: log.supervisor,
-              notes: log.notes
-            });
+            if (svSeen.has(svKey(log))) { skippedLogs++; continue; }
+            svSeen.add(svKey(log));
+            await createSupervisionLog(targetId, { date: log.date, hours: log.hours, type: log.type, supervisor: log.supervisor, notes: log.notes });
+            addedLogs++;
           }
-          importedCount++;
+        };
+
+        if (!isAdminUser) {
+          // 일반 사용자: 기록장은 하나뿐이라 새로 만들지 않고 지금 기록장에 합침
+          let target = activeSupervisee || supervisees[0] || null;
+          if (!target && svList.length) {
+            const src = svList[0];
+            const created = await createSupervisee(loggedInUser.id, { name: loggedInUser.name || src.name || '내 자격', examType: src.examType || src.exam_type || 'QASP-S' });
+            if (created) target = { id: created.id, fieldworkLogs: [], supervisionLogs: [] };
+          }
+          if (target) {
+            for (const sv of svList) await addLogs(target.id, target, sv);
+            importedCount = svList.length ? 1 : 0;
+          }
+        } else {
+          for (const sv of svList) {
+            // 다른 사용자 기록장은 그 사람 계정에 그대로 있으므로 다시 만들지 않음
+            if (sv.ownerName) { skippedOthers++; continue; }
+            const created = await createSupervisee(loggedInUser.id, {
+              name: sv.name,
+              examType: sv.examType || sv.exam_type || 'QASP-S',
+              mainSupervisor: sv.mainSupervisor || sv.main_supervisor || '',
+              supervisors: sv.supervisors || [],
+              startDate: sv.startDate || sv.start_date || ''
+            });
+            if (!created) continue;
+            await addLogs(created.id, null, sv);
+            importedCount++;
+          }
         }
 
-        showToast(`✅ ${importedCount}명의 슈퍼바이지 데이터가 복원되었습니다`, 'good');
-        await reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role);
+        // 연수시간(CEU) 기록도 백업에 있으면 지금 기록에 더함 (같은 이수증은 한 번만)
+        let ceuMsg = '';
+        if (imported.ceu && loggedInUser?.ceu) {
+          try {
+            const cur = await loadCeuData();
+            if (cur && cur.error) throw new Error(cur.error);
+            const c = cur || { myCerts: [], certs: {}, records: [] };
+            const o = imported.ceu;
+            const ids = new Set((c.records || []).map(r => r.id));
+            const certs = { ...(c.certs || {}) };
+            Object.keys(o.certs || {}).forEach(n => { if (!certs[n] || !certs[n].acquired) certs[n] = o.certs[n]; });
+            const merged = {
+              ...c,
+              myCerts: Array.from(new Set([...(c.myCerts || []), ...(o.myCerts || [])])),
+              certs,
+              records: [...(c.records || []), ...(o.records || []).filter(r => !ids.has(r.id))]
+            };
+            const res = await saveCeuData(merged);
+            ceuMsg = res && res.ok ? ' · 연수시간(CEU) 기록도 합쳤습니다' : ' · 연수시간(CEU)은 합치지 못했습니다';
+            setCeuKey(k => k + 1);
+          } catch (e2) { ceuMsg = ' · 연수시간(CEU)은 합치지 못했습니다'; }
+        }
+
+        showToast(isAdminUser
+          ? `✅ ${importedCount}명의 슈퍼바이지 데이터가 복원되었습니다${skippedOthers ? ` (사용자 기록장 ${skippedOthers}개는 그 사람 계정에 있어 건너뜀)` : ''}${ceuMsg}`
+          : `✅ 기록 ${addedLogs}건을 복원했습니다${skippedLogs ? ` (이미 있는 ${skippedLogs}건은 건너뜀)` : ''}${ceuMsg}`, 'good');
+        await reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu);
       } catch (err) {
         console.error('importData error:', err);
         showToast('파일을 읽을 수 없습니다: ' + err.message, 'danger');
@@ -1028,7 +1096,7 @@ export default function App() {
         <AdminPage
           currentUser={loggedInUser}
           onLogout={handleLogout}
-          onSwitchToUserMode={() => setAdminViewMode('user-preview')}
+          onSwitchToUserMode={() => { setAdminViewMode('user-preview'); reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu); }}
         />
         {modalDialog && <AppDialog {...modalDialog} />}
         {toast && <Toast {...toast} />}
@@ -1045,7 +1113,7 @@ export default function App() {
                  style={{ width: 56, height: 56, objectFit: 'contain', flexShrink: 0 }} />
             <div>
               <h1 style={{ margin: 0, fontSize: 24, color: C.pinkDeep, fontWeight: 700, letterSpacing: '-0.02em' }}>검단ABA 자격 관리</h1>
-              <p style={{ margin: '6px 0 0 0', fontSize: 13, color: C.plumDark }}>QBA · QASP-S 자격 준비 보조</p>
+              <p style={{ margin: '6px 0 0 0', fontSize: 13, color: C.plumDark }}>수련시간·연수시간(CEU) 관리</p>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1056,9 +1124,20 @@ export default function App() {
                         onChange={e => update({ activeSuperviseeId: e.target.value })}
                         title="현재 보고 있는 슈퍼바이지"
                         style={{ padding: '10px 12px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkSoft, border: `1.5px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
-                  {data.supervisees.map(sv => (
-                    <option key={sv.id} value={sv.id}>👤 {sv.name} ({sv.examType})</option>
-                  ))}
+                  {data.supervisees.some(sv => !sv.ownerName) && (
+                    <optgroup label="내 슈퍼바이지">
+                      {data.supervisees.filter(sv => !sv.ownerName).map(sv => (
+                        <option key={sv.id} value={sv.id}>👤 {sv.name} ({sv.examType})</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {data.supervisees.some(sv => sv.ownerName) && (
+                    <optgroup label="사용자 기록장">
+                      {data.supervisees.filter(sv => sv.ownerName).map(sv => (
+                        <option key={sv.id} value={sv.id}>🧑 {sv.name} ({sv.examType}) · {sv.ownerName} 계정</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
                 <button onClick={() => setShowManageSv(true)} title="슈퍼바이지 추가·삭제·이름 변경"
                         style={headerBtnStyle}>👥</button>
@@ -1085,11 +1164,16 @@ export default function App() {
             )}
             <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
                     style={headerBtnStyle} disabled={!activeSupervisee}>📊</button>
-            <button onClick={exportData} title="전체 데이터 JSON 백업 다운로드 (복원 가능)"
+            <button onClick={exportData} title="내 기록 전체를 파일로 받기 (연수시간 포함, 이수증 사진은 제외)"
                     style={headerBtnStyle}>💾</button>
-            <button onClick={() => fileInputRef.current?.click()} title="백업 파일을 불러와서 복원"
-                    style={headerBtnStyle}>📂</button>
-            <input ref={fileInputRef} type="file" accept=".json" onChange={importData} style={{ display: 'none' }} />
+            {/* 복원은 원장님(관리자)만 — 바깥 사용자가 잘못 눌러 기록이 엉키지 않게 */}
+            {loggedInUser?.role === 'admin' && (
+              <>
+                <button onClick={() => fileInputRef.current?.click()} title="백업 파일을 불러와서 복원"
+                        style={headerBtnStyle}>📂</button>
+                <input ref={fileInputRef} type="file" accept=".json" onChange={importData} style={{ display: 'none' }} />
+              </>
+            )}
             <button onClick={() => setShowGuide(true)} title="사용 안내 보기"
                     style={headerBtnStyle}>📖</button>
             {/* 관리자가 미리보기 모드일 때 돌아가기 버튼 */}
@@ -1141,9 +1225,9 @@ export default function App() {
         </datalist>
 
         {tab === 'ceu' && loggedInUser?.ceu ? (
-          <CeuTab me={{ id: loggedInUser.id, name: loggedInUser.name || loggedInUser.user_id }} />
+          <CeuTab key={ceuKey} me={{ id: loggedInUser.id, name: loggedInUser.name || loggedInUser.user_id }} />
         ) : !activeSupervisee ? (
-          <EmptyStateNoSupervisee onAdd={() => setShowManageSv(true)} />
+          <EmptyStateNoSupervisee onAdd={() => setShowManageSv(true)} isAdmin={loggedInUser?.role === 'admin'} hasCeu={!!loggedInUser?.ceu} onOpenCeu={() => setTab('ceu')} />
         ) : (
           <>
             {tab === 'dashboard' && <Dashboard activeSupervisee={activeSupervisee} stats={stats} exam={exam} updateActive={updateActive} />}
@@ -3159,7 +3243,7 @@ function ExamInfoTab({ currentExam }) {
           <PrepStep num="4" title="필드워크 시작" desc="첫 코스워크 수업일 이후부터 시간 누적 가능. 월 20~140시간만 인정" />
           <PrepStep num="5" title="요건 충족" desc="필드워크 총 시간 + 매월 슈퍼비전 5% + 코스워크 + 추천서 + 배경 조회" />
           <PrepStep num="6" title="시험 응시" desc="QABA 공식 사이트에서 응시료 결제 후 시험 신청 (QBA $350 · QASP-S $300)" />
-          <PrepStep num="7" title="자격 유지" desc="2년마다 CEU 이수 (QBA 32개 · QASP-S 20개) + 윤리 강령 동의 + 갱신 신청" />
+          <PrepStep num="7" title="자격 유지" desc="2년마다 CEU 이수 (QBA 32개 · QASP-S 20개) + 윤리 강령 동의 + 갱신 신청 · 이수 현황은 🏅 연수시간(CEU) 탭에서 관리할 수 있어요 (켜 준 계정만)" />
         </div>
       </CollapsibleSection>
 
@@ -3632,6 +3716,18 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                       <td style={tdStyleAdm}>
                         {u.role === 'admin' ? (
                           <span style={{ fontSize: 11, color: '#CCC' }}>-</span>
+                        ) : stats && stats.superviseeCount === 0 ? (
+                          // 기록장이 없는 사용자: 원장님이 바로 만들어 줄 수 있게
+                          <button onClick={async () => {
+                            if (!await window.appConfirm(`'${u.name}' 계정에 수련 기록장을 만들까요?\n(만들면 원장님 화면 👤 고르는 칸의 '사용자 기록장'에 보입니다)`, '수련 기록장 만들기')) return;
+                            const sv = await createSuperviseeFor(u.id, { name: u.name, examType: 'QASP-S' });
+                            if (!sv) { await window.appAlert('기록장을 만들지 못했습니다'); return; }
+                            setStatsCache(prev => { const n = { ...prev }; delete n[u.id]; return n; });
+                            loadUsers();
+                          }}
+                                  style={{ padding: '4px 9px', background: C.pinkSoft, color: C.plumDark, border: `1px solid ${C.pinkLight}`, borderRadius: 5, fontSize: 11, cursor: 'pointer' }}>
+                            📋 기록장 만들기
+                          </button>
                         ) : stats ? (
                           <span style={{ fontSize: 11, color: C.grayText }}>
                             슈퍼바이지 {stats.superviseeCount}명 · FW {stats.fieldworkCount} · SV {stats.supervisionCount}
@@ -3709,6 +3805,13 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
           onSave={async (form) => {
             const result = await createUser(form);
             if (result.success) {
+              // 수련 기록장을 그 사람 계정에 바로 만들어 둠 (그 사람이 로그인하기 전에도 원장님 화면에 보임)
+              let bookFail = false;
+              if (form.makeBook && result.user?.id) {
+                const sv = await createSuperviseeFor(result.user.id, { name: form.name, examType: form.bookExam || 'QASP-S' });
+                if (!sv) bookFail = true;
+              }
+              if (bookFail) await window.appAlert('계정은 만들었지만 수련 기록장을 만들지 못했습니다. 그 사람이 처음 로그인하면 자동으로 만들어집니다(CEU 탭을 켠 사람은 제외).');
               await loadUsers();
               setShowAddModal(false);
               await window.appAlert(`✅ 사용자가 추가되었습니다.\n\n아이디: ${form.user_id}\n비밀번호: ${form.password}\n\n📋 카톡 발송용:\n검단ABA 자격 관리 계정 안내\n🔗 https://aba-geomdan.github.io/geomdan-tracker/\n👤 아이디: ${form.user_id}\n🔑 비밀번호: ${form.password}${form.expires_at ? `\n📅 유효기간: ${form.expires_at}까지` : ''}`);
@@ -3897,7 +4000,11 @@ function UserFormModal({ mode, initial, onClose, onSave }) {
     password: '',
     name: initial?.name || '',
     role: initial?.role || 'user',
-    expires_at: initial?.expires_at ? initial.expires_at.substring(0, 10) : ''
+    expires_at: initial?.expires_at ? initial.expires_at.substring(0, 10) : '',
+    // 새 사용자 추가할 때만: 수련 기록장 바로 만들기 / 연수시간(CEU) 탭 켜기
+    makeBook: true,
+    bookExam: 'QASP-S',
+    ceu: false
   });
 
   const isEdit = mode === 'edit';
@@ -3920,6 +4027,11 @@ function UserFormModal({ mode, initial, onClose, onSave }) {
       role: form.role,
       expires_at: form.expires_at || null
     };
+    if (!isEdit && form.role !== 'admin') {
+      payload.makeBook = form.makeBook;
+      payload.bookExam = form.bookExam;
+      payload.ceu = form.ceu;
+    }
     if (form.password.trim()) payload.password = form.password.trim();
     onSave(payload);
   };
@@ -3985,6 +4097,26 @@ function UserFormModal({ mode, initial, onClose, onSave }) {
                       style={chipBtnStyle}>무제한</button>
             </div>
           </AdminField>
+
+          {!isEdit && form.role !== 'admin' && (
+            <AdminField label="쓸 것" hint="수련 기록장을 만들면 원장님 화면 👤 고르는 칸의 '사용자 기록장'에 바로 보입니다">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.plumDark, cursor: 'pointer', marginBottom: 8 }}>
+                <input type="checkbox" checked={form.makeBook} onChange={e => setForm(p => ({ ...p, makeBook: e.target.checked }))} />
+                📋 수련 기록장 만들기 (수련 중인 사람)
+                {form.makeBook && (
+                  <select value={form.bookExam} onChange={e => setForm(p => ({ ...p, bookExam: e.target.value }))}
+                          style={{ ...modalInputStyle, width: 'auto', padding: '4px 8px', marginLeft: 4 }}>
+                    <option value="QASP-S">QASP-S</option>
+                    <option value="QBA">QBA</option>
+                  </select>
+                )}
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.plumDark, cursor: 'pointer' }}>
+                <input type="checkbox" checked={form.ceu} onChange={e => setForm(p => ({ ...p, ceu: e.target.checked }))} />
+                🏅 연수시간(CEU) 탭 보이기
+              </label>
+            </AdminField>
+          )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button onClick={onClose}
@@ -4150,7 +4282,7 @@ function LoginScreen({ onLogin }) {
           검단ABA 자격 관리
         </h1>
         <p style={{ margin: 0, fontSize: 13, color: C.grayText }}>
-          QABA QBA·QASP-S 슈퍼비전 시간 관리 시스템
+          수련시간·연수시간(CEU) 관리
         </p>
       </div>
 
@@ -4294,7 +4426,25 @@ function LoginScreen({ onLogin }) {
 // ============================================
 // 빈 상태 - 슈퍼바이지 없을 때
 // ============================================
-function EmptyStateNoSupervisee({ onAdd }) {
+function EmptyStateNoSupervisee({ onAdd, isAdmin, hasCeu, onOpenCeu }) {
+  // 일반 사용자(바깥 사용자)는 기록장을 직접 만들지 않음 — 관리자가 만들어 줌
+  if (!isAdmin) {
+    return (
+      <div style={{ background: `linear-gradient(135deg, ${C.pinkSoft} 0%, ${C.pinkPale} 100%)`, border: `2px dashed ${C.pinkLight}`, borderRadius: 16, padding: 50, textAlign: 'center' }}>
+        <div style={{ fontSize: 44, marginBottom: 14 }}>📋</div>
+        <h2 style={{ margin: '0 0 10px 0', color: C.pinkDeep, fontSize: 20, fontWeight: 700 }}>아직 수련 기록장이 없습니다</h2>
+        <p style={{ margin: '0 0 20px 0', fontSize: 14, color: C.plumDark, lineHeight: 1.7 }}>
+          수련(필드워크·슈퍼비전) 시간을 기록하려면 검단ABA에 문의해 주세요.
+        </p>
+        {hasCeu && (
+          <button onClick={onOpenCeu}
+                  style={{ padding: '12px 24px', fontSize: 14, fontWeight: 700, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+            🏅 연수시간(CEU) 열기
+          </button>
+        )}
+      </div>
+    );
+  }
   return (
     <div style={{
       background: `linear-gradient(135deg, ${C.pinkSoft} 0%, ${C.pinkPale} 100%)`,
@@ -4440,7 +4590,7 @@ function ManageSuperviseesModal({ supervisees, activeId, onAdd, onRemove, onRena
                         <>
                           <div style={{ flex: 1, minWidth: 100 }}>
                             <div style={{ fontSize: 14, fontWeight: 700, color: C.plumDark }}>
-                              👤 {sv.name}
+                              👤 {sv.name}{sv.ownerName ? <span style={{ fontSize: 11, color: C.grayText, fontWeight: 400 }}> · {sv.ownerName} 계정</span> : null}
                               {isActive && <span style={{ fontSize: 10, marginLeft: 6, padding: '2px 6px', background: C.pinkDeep, color: C.white, borderRadius: 8 }}>활성</span>}
                             </div>
                             <div style={{ fontSize: 11, color: C.grayText, marginTop: 2 }}>
@@ -4681,7 +4831,7 @@ function GuideModal({ onClose }) {
           <div style={{ background: C.pinkPale, padding: 14, borderRadius: 10, marginBottom: 20 }}>
             <strong style={{ color: C.pinkDeep, fontSize: 14 }}>👋 환영합니다!</strong>
             <p style={{ margin: '6px 0 0 0', fontSize: 13 }}>
-              이 앱은 <strong>QABA (QBA·QASP-S) 자격 준비</strong>를 도와드려요.<br/>
+              이 앱은 <strong>QABA (QBA·QASP-S) 자격 준비</strong>와 자격을 딴 뒤의 <strong>연수시간(CEU) 관리</strong>를 도와드려요.<br/>
               매일 기록만 잘 해두면 자동으로 진행률·5% 충족 여부를 계산해드립니다.
             </p>
           </div>
@@ -4750,12 +4900,22 @@ function GuideModal({ onClose }) {
             ※ 슈퍼바이저나 자격증 신청 시 활용하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다.
           </p>
 
+          <h3 style={{ color: C.plumDark }}>🏅 연수시간(CEU)</h3>
+          <p>자격 갱신에 필요한 연수시간(CEU)을 관리하는 탭입니다. 검단ABA가 켜 준 계정에만 보여요.</p>
+          <ul>
+            <li><strong>보유 자격 설정</strong>: 가진 자격(BCBA·QBA·QASP-S·KBA 등)을 고르면 자격별 카드가 생겨요</li>
+            <li><strong>이수증 인식</strong>: 이수증 사진이나 PDF를 올리면 강의명·날짜·시간·인정 자격을 자동으로 읽어요</li>
+            <li><strong>한 번에 여러 자격</strong>: 이수증 한 장이 여러 자격에 인정되면 한 번만 등록해도 각 자격에 함께 들어가요</li>
+            <li><strong>부족분·D-day</strong>: 자격마다 남은 시간, 항목별 부족분, 갱신까지 남은 날짜를 보여 줘요</li>
+            <li><strong>📄 PDF 요약</strong>: 자격별 이수 현황을 한 장으로 출력할 수 있어요</li>
+          </ul>
+
           <h3 style={{ color: C.plumDark }}>☁️ 데이터 안전성</h3>
           <ul>
             <li>모든 데이터는 <strong>클라우드(Supabase)</strong>에 자동 저장됩니다</li>
             <li>다른 기기(집/직장 PC, 휴대폰)에서 로그인해도 <strong>같은 데이터</strong>가 보여요</li>
             <li>브라우저를 닫거나 캐시를 지워도 데이터는 안전합니다</li>
-            <li>걱정되시면 가끔 <strong>💾 백업</strong> 버튼으로 JSON 파일을 받아두세요</li>
+            <li>걱정되시면 가끔 <strong>💾 백업</strong> 버튼으로 JSON 파일을 받아두세요 (연수시간 기록도 함께 들어가요. 이수증 사진은 들어가지 않아요)</li>
           </ul>
 
           <h3 style={{ color: C.plumDark }}>🔒 보안 안내</h3>
