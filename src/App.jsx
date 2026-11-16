@@ -3630,7 +3630,9 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                         {expStatus.label}
                       </td>
                       <td style={tdStyleAdm}>
-                        {stats ? (
+                        {u.role === 'admin' ? (
+                          <span style={{ fontSize: 11, color: '#CCC' }}>-</span>
+                        ) : stats ? (
                           <span style={{ fontSize: 11, color: C.grayText }}>
                             슈퍼바이지 {stats.superviseeCount}명 · FW {stats.fieldworkCount} · SV {stats.supervisionCount}
                           </span>
