@@ -1,7 +1,7 @@
 {
   "name": "geomdan-tracker",
   "version": "1.0.0",
-  "description": "검단ABA 자격시간 추적 시스템 - BCBA·QBA·QASP-S 자격 준비 보조",
+  "description": "검단ABA 자격 관리 - 수련시간·연수시간(CEU) 관리",
   "type": "module",
   "scripts": {
     "dev": "vite",
