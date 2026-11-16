@@ -142,8 +142,9 @@ export const authLogin = async (userId, password) => {
       saveSession(null);
       return { success: false, error: '계정이 비활성화되었습니다. 검단ABA에 문의해주세요' };
     }
-    // 만료 확인 (metadata.expires_at)
-    if (meta.expires_at && new Date(meta.expires_at) < new Date()) {
+    // 만료 확인 (본인이 못 고치는 app_metadata 를 먼저 봄, 관리자는 만료 없음)
+    const expAt = appMeta.expires_at || meta.expires_at;
+    if (role !== 'admin' && expAt && String(expAt).slice(0, 10) < new Date().toISOString().slice(0, 10)) {
       saveSession(null);
       return { success: false, error: '라이센스가 만료되었습니다. 검단ABA에 문의해주세요' };
     }
@@ -155,7 +156,7 @@ export const authLogin = async (userId, password) => {
         user_id: meta.user_id || emailToId(data.user.email), // 원래 아이디
         name: meta.display_name || meta.name || emailToId(data.user.email),
         role: role === 'admin' ? 'admin' : 'user',
-        expires_at: meta.expires_at || null,
+        expires_at: expAt || null,
         // 연수시간(CEU) 탭: 관리자는 늘 보이고, 다른 사람은 관리자가 켜 준 경우에만
         ceu: role === 'admin' || appMeta.ceu === true,
       },
@@ -186,6 +187,16 @@ export const fetchSupervisees = async (userId) => {
 export const createSupervisee = async (userId, supervisee) => {
   try { return await callData('createSupervisee', { supervisee }); }
   catch (e) { console.error('createSupervisee error:', e); return null; }
+};
+// (관리자) 다른 사람 계정에 기록장 만들어 주기 — 새 사용자 추가할 때
+export const createSuperviseeFor = async (targetUid, supervisee) => {
+  try { return await callData('createSupervisee', { supervisee, targetUid }); }
+  catch (e) { console.error('createSuperviseeFor error:', e); return null; }
+};
+// (관리자) 모든 사람의 기록장 목록
+export const fetchAllSupervisees = async () => {
+  try { return await callData('fetchAllSupervisees', {}); }
+  catch (e) { console.error('fetchAllSupervisees error:', e); return []; }
 };
 export const updateSupervisee = async (id, changes) => {
   try { await callData('updateSupervisee', { id, changes }); return true; }
@@ -277,6 +288,7 @@ export const createUser = async (userData) => {
       user_id: String(u.user_id || '').trim().toLowerCase(),
       role: u.role === 'admin' ? 'admin' : 'user',
       expires_at: u.expires_at || null,
+      ceu: u.ceu === true,
     });
     if (!out._ok || out.error) return { success: false, error: out.error || '계정 생성 실패' };
     return { success: true, user: out.user };
