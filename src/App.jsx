@@ -4873,7 +4873,7 @@ function GuideModal({ onClose }) {
           <ol>
             <li><strong>시험 종류 선택</strong> - 우측 상단에서 본인의 시험 선택 (QBA / QASP-S)</li>
             <li><strong>슈퍼바이저 정보 입력</strong> - 대시보드 상단에서 메인 슈퍼바이저 이름 입력 (이후 자동완성됨)</li>
-            <li><strong>한 달마다 기록</strong> - 📄 월별 서식 탭에 QABA 월별 서식(PDF·사진)을 올리면 날짜별 시간을 읽어 넣어요. 몇 건만 넣을 땐 ✏️ 직접 입력</li>
+            <li><strong>한 달마다 기록</strong> - 📄 월별 서식 탭에 QABA 월별 서식(PDF·사진·Word)을 올리면 날짜별 시간을 읽어 넣어요. 몇 건만 넣을 땐 ✏️ 직접 입력</li>
           </ol>
           <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic' }}>
             💡 회기 끝나고 바로 기록하는 습관이 가장 정확해요!
@@ -4935,7 +4935,7 @@ function GuideModal({ onClose }) {
 
           <h3 style={{ color: C.plumDark }}>📄 월별 서식 올리기</h3>
           <ul>
-            <li>QABA <strong>Pre-QBA Certification Monthly Supervision Log</strong>를 채워서 PDF나 사진으로 올리면, 날짜별 A(직접)·B(간접)·C(1:1)·D(그룹) 시간과 관찰·역량 Y/N, 평가를 읽어요</li>
+            <li>QABA <strong>Pre-QBA Certification Monthly Supervision Log</strong>를 채워서 PDF·사진·Word(.docx) 중 편한 것으로 올리면, 날짜별 A(직접)·B(간접)·C(1:1)·D(그룹) 시간과 관찰·역량 Y/N, 평가를 읽어요</li>
             <li>확인 화면에서 틀린 칸을 고친 뒤 저장하면 대시보드·5%·월별 요약·엑셀에 바로 반영돼요</li>
             <li>서식에는 칸이 없는 <strong>대면 또는 실시간 화상 1시간 이상</strong>은 확인 화면에서 직접 체크해요</li>
             <li>올린 원본은 앱에 보관돼서 언제든 📎 원본으로 다시 열 수 있어요 (QABA 7년 보관 대비)</li>

@@ -1,13 +1,13 @@
 // ============================================================
 // 📄 월별 서식 탭 — QABA "Pre-QBA Certification Monthly Supervision Log"
-//   - 채워진 서식(PDF·사진)을 올리면 AI가 날짜별 A·B·C·D 시간, 관찰·역량 Y/N, 합계, 평가를 읽음
+//   - 채워진 서식(PDF·사진·Word)을 올리면 AI가 날짜별 A·B·C·D 시간, 관찰·역량 Y/N, 합계, 평가를 읽음
 //   - 확인 화면에서 고친 뒤 저장 → 필드워크·슈퍼비전 기록으로 들어가 대시보드·5%·엑셀이 자동 계산
 //   - 서식 원본은 보관함에 같이 저장 (QABA 7년 보관 대비)
 //   - 같은 달을 다시 올리면 그 달 서식에서 들어온 기록만 바꿈 (직접 입력한 기록은 그대로)
 // ============================================================
 import React, { useState } from 'react';
 import {
-  readMonthlyForm, uploadMonthlyFile, getMonthlyFileUrl, saveMonthlyLog, deleteMonthlyLog,
+  readMonthlyForm, readMonthlyFormText, uploadMonthlyFile, getMonthlyFileUrl, saveMonthlyLog, deleteMonthlyLog,
   createFieldworkLog, deleteFieldworkLog, createSupervisionLog, deleteSupervisionLog,
 } from './supabase';
 
@@ -56,6 +56,31 @@ function computeTotals(rows) {
   return { a: r1(a), b: r1(b), c: r1(c), d: r1(d), independent: r1(independent), supervised: r1(supervised),
     percent: independent > 0 ? Math.round(supervised / independent * 1000) / 10 : 0 };
 }
+
+// Word(.docx) → 글자로 바꾸기 (표는 한 줄씩, 칸은 | 로 나눔). 이 기능을 쓸 때만 불러옴
+const docxToText = async (file) => {
+  const mammoth = (await import('mammoth')).default;
+  const { value: html } = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() });
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const out = [];
+  const walk = (el) => {
+    for (const n of el.children) {
+      if (n.tagName === 'TABLE') {
+        out.push('[표]');
+        for (const tr of n.querySelectorAll('tr')) {
+          const cells = [...tr.children].map((td) => td.textContent.replace(/\s+/g, ' ').trim());
+          if (cells.some((c) => c)) out.push(cells.join(' | '));
+        }
+        out.push('[표 끝]');
+      } else if (/^(P|H\d|LI)$/.test(n.tagName)) {
+        const t = n.textContent.replace(/\s+/g, ' ').trim();
+        if (t) out.push(t);
+      } else walk(n);
+    }
+  };
+  walk(doc.body);
+  return out.join('\n');
+};
 
 const fileToBase64 = (file) => new Promise((res, rej) => {
   const fr = new FileReader();
@@ -203,9 +228,18 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
     if (file.size > 20 * 1024 * 1024) { setErr('파일이 너무 큽니다 (20MB까지).'); return; }
     setErr(''); setReading(true);
     try {
-      const b64 = await fileToBase64(file);
-      const type = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
-      const res = await readMonthlyForm(b64, type);
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.doc')) { setErr('옛날 Word 파일(.doc)은 못 읽어요. Word에서 "다른 이름으로 저장 → .docx" 또는 PDF로 저장해서 올려 주세요.'); return; }
+      let res;
+      if (name.endsWith('.docx')) {
+        const text = await docxToText(file);
+        if (!text.trim()) { setErr('Word 파일 안에 글자가 없어요. PDF나 사진으로 올려 주세요.'); return; }
+        res = await readMonthlyFormText(text);
+      } else {
+        const b64 = await fileToBase64(file);
+        const type = file.type || (name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+        res = await readMonthlyForm(b64, type);
+      }
       if (res.error) { setErr(res.error); return; }
       setPendingFile(file);
       setDraft(normalize(res.result));
@@ -297,14 +331,14 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
         </div>
         <label style={{ marginLeft: 'auto', padding: '11px 18px', background: C.pinkDeep, color: C.white, borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: reading ? 'wait' : 'pointer', opacity: reading ? 0.6 : 1 }}>
           {reading ? '읽는 중… (30초쯤 걸려요)' : '📄 월별 서식 올리기'}
-          <input type="file" accept="application/pdf,image/*" onChange={pick} disabled={reading} style={{ display: 'none' }} />
+          <input type="file" accept="application/pdf,image/*,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={pick} disabled={reading} style={{ display: 'none' }} />
         </label>
       </div>
       {err && <div style={{ marginBottom: 12, padding: '10px 14px', background: '#FFF0F0', color: C.dangerRed, borderRadius: 8, fontSize: 13, fontWeight: 700 }}>{err}</div>}
 
       {logs.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', background: C.pinkPale, border: `2px dashed ${C.pinkLight}`, borderRadius: 12, color: C.plumDark, fontSize: 14, lineHeight: 1.8 }}>
-          아직 올린 서식이 없습니다.<br />채워진 월별 서식 PDF나 사진을 올려 주세요.
+          아직 올린 서식이 없습니다.<br />채워진 월별 서식을 PDF·사진·Word(.docx) 중 편한 것으로 올려 주세요.
         </div>
       ) : (
         <div style={{ background: C.white, borderRadius: 12, padding: 6, overflowX: 'auto', border: `1px solid ${C.pinkLight}` }}>

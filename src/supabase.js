@@ -364,15 +364,15 @@ export const deleteMonthlyLog = async (id) => {
   catch (e) { console.error('deleteMonthlyLog error:', e); return false; }
 };
 
-// 서식 파일을 AI로 읽기 (qaba-log-read)
-export const readMonthlyForm = async (base64, mediaType) => {
+// 서식 파일을 AI로 읽기 (qaba-log-read). PDF·사진은 파일 그대로, Word는 글자로 바꿔서 보냄
+const callQabaLogRead = async (payload) => {
   try {
     const t = await getValidAccessToken();
     if (!t) return { error: '로그인 시간이 끝났습니다. 다시 로그인해 주세요.' };
     const r = await fetch(`${SUPABASE_URL}/functions/v1/qaba-log-read`, {
       method: 'POST',
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: { media_type: mediaType, data: base64 } }),
+      body: JSON.stringify(payload),
     });
     let out = null;
     try { out = await r.json(); } catch (e) {}
@@ -380,6 +380,8 @@ export const readMonthlyForm = async (base64, mediaType) => {
     return { result: out.result };
   } catch (e) { return { error: '서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.' }; }
 };
+export const readMonthlyForm = (base64, mediaType) => callQabaLogRead({ file: { media_type: mediaType, data: base64 } });
+export const readMonthlyFormText = (text) => callQabaLogRead({ text });
 
 // 서식 원본 보관 (monthly-logs 보관함, 기록장 주인 폴더)
 export const uploadMonthlyFile = async (ownerUid, superviseeId, month, file) => {
