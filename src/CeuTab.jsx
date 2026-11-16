@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   loadMyData, saveMyData, updateMyCerts,
   uploadReceipt, getReceiptUrl, deleteReceipt, getLoginToken,
-  CEU_RELAY_URL, CEU_ANON_KEY,
+  CEU_RELAY_URL, CEU_ANON_KEY, importFromOldCeu,
 } from "./ceuApi.js";
 
 
@@ -1180,6 +1180,64 @@ function Settings({ myCerts, onSave }) {
 
 /* ---------------- 관리자 (Supabase 계정 관리) ---------------- */
 
+/* ---------------- [한 번만] 예전 CEU 앱에서 가져오기 ---------------- */
+// 지금 탭의 기록에 예전 기록을 더함 (같은 이수증은 한 번만). 지금 탭이 비어 있으면 예전 것 그대로.
+function mergeImported(cur, old) {
+  const o = ensureCerts({ ...emptyData(), ...old });
+  const c = cur ? ensureCerts(cur) : null;
+  if (!c || (!(c.records || []).length && !Object.values(c.certs || {}).some((x) => x && x.acquired))) {
+    return { ...o, importedFromOld: todayISO() };
+  }
+  const myCerts = Array.from(new Set([...(c.myCerts || []), ...(o.myCerts || [])]));
+  const certs = { ...c.certs };
+  Object.keys(o.certs || {}).forEach((n) => {
+    if (!certs[n] || !certs[n].acquired) certs[n] = o.certs[n];
+  });
+  const ids = new Set((c.records || []).map((r) => r.id));
+  const records = [...(c.records || []), ...(o.records || []).filter((r) => !ids.has(r.id))];
+  return ensureCerts({ ...c, myCerts, certs, records, importedFromOld: todayISO() });
+}
+
+function ImportOldModal({ hasCurrent, onDone, onClose }) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [stepText, setStepText] = useState("");
+  const [err, setErr] = useState("");
+  const go = async () => {
+    if (!email.trim() || !pw) { setErr("이메일과 비밀번호를 모두 넣어 주세요."); return; }
+    setBusy(true); setErr(""); setStepText("");
+    const res = await importFromOldCeu(email, pw, setStepText);
+    setPw("");
+    if (res.error) { setBusy(false); setErr(res.error); return; }
+    await onDone(res);
+    setBusy(false);
+  };
+  return (
+    <div onClick={busy ? undefined : onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 420, padding: 22 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 6 }}>예전 CEU 앱에서 가져오기</div>
+        <div style={{ fontSize: 13, color: MUTE, lineHeight: 1.6, marginBottom: 14 }}>
+          예전 연수시간 관리 앱에 쓰던 이메일과 비밀번호를 넣으면, 기록·보유 자격·갱신 이력·이수증 사진을 이곳으로 옮깁니다.
+          예전 앱의 기록은 지우지 않고 그대로 둡니다. 비밀번호는 저장하지 않습니다.
+          {hasCurrent && <><br /><b style={{ color: PKD }}>지금 이 탭에 있는 기록은 그대로 두고, 예전 기록을 더합니다.</b></>}
+        </div>
+        <label className="lbl">예전 CEU 앱 이메일</label>
+        <input className="inp" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" disabled={busy} style={{ marginBottom: 10 }} />
+        <label className="lbl">비밀번호</label>
+        <input className="inp" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" disabled={busy}
+          onKeyDown={(e) => { if (e.key === "Enter" && !busy) go(); }} />
+        {stepText && busy && <div style={{ marginTop: 12, fontSize: 13, color: PKD, fontWeight: 700 }}>{stepText}</div>}
+        {err && <div style={{ marginTop: 12, fontSize: 13, color: BAD, fontWeight: 700 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onClose} disabled={busy}>닫기</button>
+          <button className="btn btn-pk" style={{ flex: 2, opacity: busy ? 0.6 : 1 }} onClick={go} disabled={busy}>{busy ? "옮기는 중…" : "가져오기"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    트래커 안 🏅 연수시간(CEU) 탭 — 맨 위 화면
    me: { id, name } (트래커에 로그인한 사람)
@@ -1280,6 +1338,22 @@ export default function CeuTab({ me }) {
   };
   const goDetail = (name) => { setActiveCert(name); setScreen("detail"); };
 
+  // 예전 CEU 앱에서 가져오기
+  const [showImport, setShowImport] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const doImport = async (res) => {
+    const merged = mergeImported(data, res.data);
+    setData(merged);
+    latestData.current = merged;
+    await doSave(merged);
+    setShowImport(false);
+    setImportMsg(`예전 기록을 옮겼습니다. 이수증 사진 ${res.photos}장${res.photoFail ? ` (못 옮긴 사진 ${res.photoFail}장)` : ""}`);
+    setScreen(merged.myCerts && merged.myCerts.length ? "dashboard" : "pickCerts");
+  };
+  const importBtn = data && !data.importedFromOld ? (
+    <button className="btn btn-ghost" onClick={() => setShowImport(true)} style={{ padding: "7px 12px", fontSize: 13 }}>예전 CEU 앱에서 가져오기</button>
+  ) : null;
+
   const subBtn = (id, label) => (
     <button key={id} onClick={() => setScreen(id)} className="btn"
       style={{ background: screen === id ? PK : "#fff", color: screen === id ? "#fff" : INK, border: `1px solid ${screen === id ? PK : LINE}`, padding: "7px 13px" }}>{label}</button>
@@ -1314,13 +1388,25 @@ export default function CeuTab({ me }) {
         </div>
       )}
 
-      {screen === "pickCerts" && <PickCerts me={me} onDone={finishPickCerts} />}
+      {screen === "pickCerts" && (
+        <>
+          {importBtn && (
+            <div className="card" style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", maxWidth: 560, margin: "10px auto 0" }}>
+              <div style={{ flex: 1, minWidth: 240, fontSize: 13, color: INK, wordBreak: "keep-all" }}>예전 CEU 앱에 기록이 있다면 먼저 가져오세요.</div>
+              {importBtn}
+            </div>
+          )}
+          <PickCerts me={me} onDone={finishPickCerts} />
+        </>
+      )}
+      {showImport && <ImportOldModal hasCurrent={!!(data && (data.records || []).length)} onDone={doImport} onClose={() => setShowImport(false)} />}
 
       {data && screen !== "loading" && screen !== "pickCerts" && (
         <>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {subBtn("dashboard", "한눈에 보기")}
             {subBtn("settings", "보유 자격 설정")}
+            {importBtn}
             <span style={{ marginLeft: "auto" }} />
             {saveState === "saving" && <span style={{ fontSize: 12, fontWeight: 700, borderRadius: 999, padding: "3px 10px", background: PKL, color: PKD }}>저장 중…</span>}
             {saveState === "saved" && <span style={{ fontSize: 12, fontWeight: 700, borderRadius: 999, padding: "3px 10px", background: "#EAF7F0", color: OK }}>저장됨</span>}
@@ -1331,6 +1417,9 @@ export default function CeuTab({ me }) {
               </span>
             )}
           </div>
+          {importMsg && (
+            <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "#EAF7F0", color: OK, fontWeight: 700, fontSize: 13.5 }}>{importMsg}</div>
+          )}
           {screen === "dashboard" && (
             <Dashboard me={{ ...me, myCerts: data.myCerts }} data={data} onOpen={goDetail} />
           )}
