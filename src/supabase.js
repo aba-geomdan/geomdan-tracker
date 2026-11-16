@@ -349,3 +349,65 @@ export const fetchUserStats = async (userId) => {
              totalFwHours: 0, totalSvHours: 0, progress: 0, examType: null, target: 0 };
   }
 };
+
+// ── 월별 서식 (Pre-QBA Monthly Supervision Log) ───────────
+export const fetchMonthlyLogs = async (superviseeId) => {
+  try { return await callData('fetchMonthlyLogs', { superviseeId }); }
+  catch (e) { console.error('fetchMonthlyLogs error:', e); return []; }
+};
+export const saveMonthlyLog = async (superviseeId, log) => {
+  try { return await callData('saveMonthlyLog', { superviseeId, log }); }
+  catch (e) { console.error('saveMonthlyLog error:', e); return { error: e.message }; }
+};
+export const deleteMonthlyLog = async (id) => {
+  try { await callData('deleteMonthlyLog', { id }); return true; }
+  catch (e) { console.error('deleteMonthlyLog error:', e); return false; }
+};
+
+// 서식 파일을 AI로 읽기 (qaba-log-read)
+export const readMonthlyForm = async (base64, mediaType) => {
+  try {
+    const t = await getValidAccessToken();
+    if (!t) return { error: '로그인 시간이 끝났습니다. 다시 로그인해 주세요.' };
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/qaba-log-read`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: { media_type: mediaType, data: base64 } }),
+    });
+    let out = null;
+    try { out = await r.json(); } catch (e) {}
+    if (!r.ok || !out || out.error) return { error: (out && out.error) || ('서식을 읽지 못했어요 (' + r.status + ')') };
+    return { result: out.result };
+  } catch (e) { return { error: '서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.' }; }
+};
+
+// 서식 원본 보관 (monthly-logs 보관함, 기록장 주인 폴더)
+export const uploadMonthlyFile = async (ownerUid, superviseeId, month, file) => {
+  try {
+    const t = await getValidAccessToken();
+    if (!t) return { error: '로그인이 필요합니다.' };
+    const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase() : (file.type.includes('pdf') ? 'pdf' : 'jpg');
+    const path = `${ownerUid}/${superviseeId}/${month}_${Date.now()}.${ext}`;
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/monthly-logs/${path}`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${t}`, 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    if (!r.ok) return { error: '원본 저장 실패: ' + (await r.text()).slice(0, 200) };
+    return { path };
+  } catch (e) { return { error: '원본 저장 오류: ' + e.message }; }
+};
+export const getMonthlyFileUrl = async (path) => {
+  try {
+    const t = await getValidAccessToken();
+    if (!t || !path) return { error: '열 수 없습니다' };
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/monthly-logs/${path}`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresIn: 600 }),
+    });
+    if (!r.ok) return { error: '원본을 열지 못했습니다' };
+    const d = await r.json();
+    return { url: `${SUPABASE_URL}/storage/v1${d.signedURL}` };
+  } catch (e) { return { error: '원본 열기 오류' }; }
+};

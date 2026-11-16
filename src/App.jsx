@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import CeuTab from './CeuTab.jsx';
+import MonthlyLogsTab from './MonthlyLogs.jsx';
 import {
   authLogin,
   authLogout,
@@ -9,7 +10,7 @@ import {
   fetchSupervisionLogs, createSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
   getActiveSuperviseeId, setActiveSuperviseeId,
   fetchAllUsers, createUser, updateUser, deleteUser, fetchUserStats, toggleUserActive, setUserCeu,
-  createSuperviseeFor, fetchAllSupervisees
+  createSuperviseeFor, fetchAllSupervisees, fetchMonthlyLogs
 } from './supabase';
 import { loadMyData as loadCeuData, saveMyData as saveCeuData } from './ceuApi.js';
 
@@ -188,6 +189,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [tab, setTab] = useState('dashboard');
+  const [entrySub, setEntrySub] = useState('fieldwork'); // 직접 입력 탭 안: 필드워크 / 슈퍼비전
   const [ceuKey, setCeuKey] = useState(0); // 백업 복원으로 CEU가 바뀌면 CEU 탭을 새로 불러옴
   const [adminViewMode, setAdminViewMode] = useState('admin'); // 'admin' | 'user-preview' (관리자가 일반 사용자 화면 미리보기)
   const [showGuide, setShowGuide] = useState(false);
@@ -231,9 +233,10 @@ export default function App() {
       
       // 각 슈퍼바이지마다 필드워크/슈퍼비전 로그 fetch
       const enriched = await Promise.all(supList.map(async (sv) => {
-        const [fwLogs, svLogs] = await Promise.all([
+        const [fwLogs, svLogs, mLogs] = await Promise.all([
           fetchFieldworkLogs(sv.id),
-          fetchSupervisionLogs(sv.id)
+          fetchSupervisionLogs(sv.id),
+          fetchMonthlyLogs(sv.id)
         ]);
         return {
           id: sv.id,
@@ -243,6 +246,8 @@ export default function App() {
           supervisors: sv.supervisors || [],
           startDate: sv.start_date || '',
           ownerName: sv._ownerName || null, // 다른 사용자 기록장이면 그 사람 이름
+          ownerUid: sv.owner_uid || userId,  // 월별 서식 원본을 그 사람 폴더에 보관
+          monthlyLogs: mLogs || [],
           fieldworkLogs: fwLogs,
           supervisionLogs: svLogs
         };
@@ -696,7 +701,8 @@ export default function App() {
       'SV 인정 합계',
       '5% 필요',
       '충족 여부 (인정 기준)',
-      '월 한도 (20-140hr)'
+      '월 한도 (20-140hr)',
+      '대면·실시간 화상 1hr'
     ]);
 
     // monthlySummary는 최신월 먼저 정렬됨, 엑셀은 오래된순이 자연
@@ -721,7 +727,8 @@ export default function App() {
         Math.round((m.svAccepted || 0) * 10) / 10,
         Math.round(m.need * 10) / 10,
         fulfillment,
-        rangeCheck
+        rangeCheck,
+        m.live === true ? '✓' : (m.live === false ? '⚠ 확인' : '-')
       ]);
     });
 
@@ -1049,7 +1056,9 @@ export default function App() {
         indirect: m.indirect,
         need: Math.round(need * 10) / 10,
         diff: Math.round(diff * 10) / 10,
-        status: m.fw === 0 ? 'empty' : (diff >= -0.1 ? 'good' : 'short')
+        status: m.fw === 0 ? 'empty' : (diff >= -0.1 ? 'good' : 'short'),
+        // 월별 서식의 '대면·실시간 화상 1시간 이상' 체크 (서식이 없으면 null)
+        live: (() => { const ml = (activeSupervisee.monthlyLogs || []).find(x => x.month === m.ym); return ml ? !!ml.live_contact : null; })()
       };
     }).reverse(); // 최신월이 위에
 
@@ -1197,8 +1206,8 @@ export default function App() {
         {[
           { id: 'dashboard', l: '📊 대시보드' },
           ...(loggedInUser?.role === 'admin' && data.supervisees && data.supervisees.length >= 2 ? [{ id: 'overview', l: '👥 전체 현황' }] : []),
-          { id: 'fieldwork', l: '📋 필드워크' },
-          { id: 'supervision', l: '🎓 슈퍼비전' },
+          { id: 'monthly', l: '📄 월별 서식' },
+          { id: 'entry', l: '✏️ 직접 입력' },
           { id: 'info', l: '📚 시험 정보' },
           // 연수시간(CEU): 관리자가 켜 준 사람에게만 보임
           ...(loggedInUser?.ceu ? [{ id: 'ceu', l: '🏅 연수시간(CEU)' }] : [])
@@ -1232,8 +1241,26 @@ export default function App() {
           <>
             {tab === 'dashboard' && <Dashboard activeSupervisee={activeSupervisee} stats={stats} exam={exam} updateActive={updateActive} />}
             {tab === 'overview' && <OverviewTab supervisees={data.supervisees} onSelect={(id) => { update({ activeSuperviseeId: id }); setTab('dashboard'); }} />}
-            {tab === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
-            {tab === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+            {tab === 'monthly' && (
+              <MonthlyLogsTab supervisee={activeSupervisee} showToast={showToast}
+                              onChanged={() => reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu)} />
+            )}
+            {/* 직접 입력: 필드워크·슈퍼비전을 하나로 묶음 (서식 없이 몇 건만 넣을 때) */}
+            {(tab === 'entry' || tab === 'fieldwork' || tab === 'supervision') && (
+              <>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {[['fieldwork', '📋 필드워크'], ['supervision', '🎓 슈퍼비전']].map(([k, l]) => (
+                    <button key={k} onClick={() => setEntrySub(k)}
+                            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+                                     background: entrySub === k ? C.pinkDeep : C.white, color: entrySub === k ? C.white : C.plumDark,
+                                     border: `1.5px solid ${entrySub === k ? C.pinkDeep : C.pinkLight}` }}>{l}</button>
+                  ))}
+                  <span style={{ fontSize: 12, color: C.grayText, marginLeft: 6 }}>월별 서식 없이 몇 건만 넣을 때 쓰세요. 서식에서 들어온 기록도 여기서 보입니다.</span>
+                </div>
+                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
+                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+              </>
+            )}
             {tab === 'info' && <ExamInfoTab currentExam={activeSupervisee.examType} />}
           </>
         )}
@@ -1411,7 +1438,7 @@ function WelcomeCard({ examType, superviseeName }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         <StartStep num="1" title="시험 종류 확인하기" desc="우측 상단에서 본인의 시험을 선택해주세요 (QBA / QASP-S 변경 가능)" />
         <StartStep num="2" title="슈퍼바이저 정보 적기" desc="아래 메인 슈퍼바이저 이름을 입력하면 자동완성에 도움이 돼요" />
-        <StartStep num="3" title="매일 기록하기" desc="📋 필드워크 · 🎓 슈퍼비전 탭에서 시간을 입력하면 자동으로 진행률이 계산돼요" />
+        <StartStep num="3" title="한 달마다 서식 올리기" desc="📄 월별 서식 탭에 QABA 월별 서식을 올리면 시간을 읽어서 진행률이 자동으로 계산돼요 (몇 건만 넣을 땐 ✏️ 직접 입력)" />
       </div>
       <div style={{ marginTop: 16, padding: 14, background: C.white, borderRadius: 8, fontSize: 12, color: C.grayHead, lineHeight: 1.7 }}>
         <div style={{ fontWeight: 700, color: C.plumDark, marginBottom: 4 }}>📚 {examType} 자격 요건 한눈에</div>
@@ -1596,6 +1623,7 @@ function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
                   <th style={thStyle}>SV 입력 / 인정</th>
                   <th style={thStyle}>5% 필요</th>
                   <th style={thStyle}>충족 여부</th>
+                  <th style={thStyle} title="월별 서식에서 체크한 '대면 또는 실시간 화상 슈퍼비전 1시간 이상'">대면·화상 1h</th>
                 </tr>
               </thead>
               <tbody>
@@ -1624,6 +1652,11 @@ function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
                       ) : (
                         <span style={{ color: C.grayText }}>—</span>
                       )}
+                    </td>
+                    <td style={tdStyle}>
+                      {m.live === true ? <span style={{ color: C.goodGreen, fontWeight: 600 }}>✓</span>
+                        : m.live === false ? <span style={{ color: C.warnYellow, fontWeight: 600 }}>⚠ 확인</span>
+                        : <span style={{ color: C.grayText }} title="이 달 월별 서식이 없습니다">—</span>}
                     </td>
                   </tr>
                 ))}
@@ -4840,7 +4873,7 @@ function GuideModal({ onClose }) {
           <ol>
             <li><strong>시험 종류 선택</strong> - 우측 상단에서 본인의 시험 선택 (QBA / QASP-S)</li>
             <li><strong>슈퍼바이저 정보 입력</strong> - 대시보드 상단에서 메인 슈퍼바이저 이름 입력 (이후 자동완성됨)</li>
-            <li><strong>매일 기록</strong> - 📋 필드워크 · 🎓 슈퍼비전 탭에서 시간 입력</li>
+            <li><strong>한 달마다 기록</strong> - 📄 월별 서식 탭에 QABA 월별 서식(PDF·사진)을 올리면 날짜별 시간을 읽어 넣어요. 몇 건만 넣을 땐 ✏️ 직접 입력</li>
           </ol>
           <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic' }}>
             💡 회기 끝나고 바로 기록하는 습관이 가장 정확해요!
@@ -4887,7 +4920,7 @@ function GuideModal({ onClose }) {
 
           <h3 style={{ color: C.plumDark }}>⚡ 빠르게 입력하기</h3>
           <ul>
-            <li><strong>⚡ 빠른 입력 모드</strong>: 필드워크·슈퍼비전 탭에서 한 줄로 빠르게 추가</li>
+            <li><strong>⚡ 빠른 입력 모드</strong>: ✏️ 직접 입력 탭의 필드워크·슈퍼비전에서 한 줄로 빠르게 추가</li>
             <li><strong>📋 지난 회기 복사</strong>: 최근 기록과 동일한 정보로 새 카드 생성 (날짜만 다음 날로 변경)</li>
             <li><strong>슈퍼바이저 자동완성</strong>: 한 번 입력한 이름은 다음부터 자동 제시</li>
             <li><strong>+30분, +1시간 버튼</strong>: 시작 시간 선택 후 빠르게 종료 시간 설정</li>
@@ -4899,6 +4932,15 @@ function GuideModal({ onClose }) {
           <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic' }}>
             ※ 슈퍼바이저나 자격증 신청 시 활용하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다.
           </p>
+
+          <h3 style={{ color: C.plumDark }}>📄 월별 서식 올리기</h3>
+          <ul>
+            <li>QABA <strong>Pre-QBA Certification Monthly Supervision Log</strong>를 채워서 PDF나 사진으로 올리면, 날짜별 A(직접)·B(간접)·C(1:1)·D(그룹) 시간과 관찰·역량 Y/N, 평가를 읽어요</li>
+            <li>확인 화면에서 틀린 칸을 고친 뒤 저장하면 대시보드·5%·월별 요약·엑셀에 바로 반영돼요</li>
+            <li>서식에는 칸이 없는 <strong>대면 또는 실시간 화상 1시간 이상</strong>은 확인 화면에서 직접 체크해요</li>
+            <li>올린 원본은 앱에 보관돼서 언제든 📎 원본으로 다시 열 수 있어요 (QABA 7년 보관 대비)</li>
+            <li>같은 달을 다시 올리면 그 달 서식에서 들어온 기록만 새것으로 바뀌고, 직접 입력한 기록은 그대로예요</li>
+          </ul>
 
           <h3 style={{ color: C.plumDark }}>🏅 연수시간(CEU)</h3>
           <p>자격 갱신에 필요한 연수시간(CEU)을 관리하는 탭입니다. 검단ABA가 켜 준 계정에만 보여요.</p>
