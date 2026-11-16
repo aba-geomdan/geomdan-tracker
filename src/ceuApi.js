@@ -123,3 +123,93 @@ export async function deleteReceipt(path) {
     return { error: '삭제 오류: ' + e.message };
   }
 }
+
+// ============================================================
+// [한 번만] 예전 CEU 앱(센터 서버)에서 기록·이수증 사진 가져오기
+//   - 예전 앱의 이메일·비밀번호로 그 순간만 로그인해서 내 기록을 읽고, 사진을 새 보관함으로 복사함
+//   - 예전 기록은 지우지 않음 (원본 그대로 남음). 비밀번호는 저장하지 않음
+// ============================================================
+const OLD_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
+const OLD_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
+
+// 기록 안의 사진 경로(receiptPath, extraReceiptPaths)를 모두 찾거나 바꿈
+function walkPaths(node, fn) {
+  if (Array.isArray(node)) return node.map((x) => walkPaths(x, fn));
+  if (!node || typeof node !== 'object') return node;
+  const out = {};
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    if (k === 'receiptPath' && typeof v === 'string') out[k] = fn(v);
+    else if (k === 'extraReceiptPaths' && Array.isArray(v)) out[k] = v.map((p) => (typeof p === 'string' ? fn(p) : p));
+    else out[k] = walkPaths(v, fn);
+  }
+  return out;
+}
+
+// onStep(글): 진행 상황 알림.  돌려주는 값: { data, photos, photoFail } 또는 { error }
+export async function importFromOldCeu(email, password, onStep) {
+  const step = (t) => { try { onStep && onStep(t); } catch (e) {} };
+  const newUid = getSessionUserId();
+  const newToken = await getValidAccessToken();
+  if (!newUid || !newToken) return { error: '트래커 로그인이 끝났습니다. 다시 로그인해 주세요.' };
+
+  // 1) 예전 앱 로그인
+  step('예전 CEU 앱에 로그인하는 중…');
+  let old;
+  try {
+    const r = await fetch(`${OLD_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST', headers: { apikey: OLD_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: String(email || '').trim(), password }),
+    });
+    old = await r.json();
+    if (!r.ok || !old.access_token) return { error: '예전 CEU 앱 이메일 또는 비밀번호가 맞지 않습니다.' };
+  } catch (e) { return { error: '예전 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.' }; }
+  const oldToken = old.access_token;
+  const oldUid = old.user && old.user.id;
+  const endOld = () => { try { fetch(`${OLD_URL}/auth/v1/logout?scope=local`, { method: 'POST', headers: { apikey: OLD_KEY, Authorization: `Bearer ${oldToken}` } }).catch(() => {}); } catch (e) {} };
+
+  try {
+    // 2) 예전 기록 읽기
+    step('예전 기록을 읽는 중…');
+    const r = await fetch(`${OLD_URL}/rest/v1/ceu_data?owner_id=eq.${oldUid}&select=data`, { headers: { apikey: OLD_KEY, Authorization: `Bearer ${oldToken}` } });
+    if (!r.ok) return { error: '예전 기록을 읽지 못했습니다 (' + r.status + ').' };
+    const rows = await r.json();
+    if (!rows.length || !rows[0].data) return { error: '예전 CEU 앱에 저장된 기록이 없습니다.' };
+    const oldData = rows[0].data;
+
+    // 3) 사진 옮기기
+    const paths = [];
+    walkPaths(oldData, (p) => { if (p && !paths.includes(p)) paths.push(p); return p; });
+    const map = {};
+    let fail = 0;
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      step(`이수증 사진 옮기는 중… (${i + 1} / ${paths.length})`);
+      try {
+        const s = await fetch(`${OLD_URL}/storage/v1/object/sign/ceu-receipts/${p}`, {
+          method: 'POST', headers: { apikey: OLD_KEY, Authorization: `Bearer ${oldToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expiresIn: 600 }),
+        });
+        if (!s.ok) throw new Error('sign');
+        const sj = await s.json();
+        const img = await fetch(`${OLD_URL}/storage/v1${sj.signedURL}`);
+        if (!img.ok) throw new Error('down');
+        const blob = await img.blob();
+        const name = p.split('/').pop();
+        const np = `${newUid}/${name}`;
+        const tok = await getValidAccessToken();
+        const up = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${np}`, {
+          method: 'POST',
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${tok}`, 'Content-Type': blob.type || 'image/jpeg', 'x-upsert': 'true' },
+          body: blob,
+        });
+        if (!up.ok) throw new Error('up');
+        map[p] = np;
+      } catch (e) { fail++; }
+    }
+    const moved = walkPaths(oldData, (p) => map[p] || p);
+    return { data: moved, photos: paths.length - fail, photoFail: fail };
+  } finally {
+    endOld();
+  }
+}
