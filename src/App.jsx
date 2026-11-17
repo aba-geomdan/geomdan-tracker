@@ -1102,6 +1102,25 @@ export default function App() {
 
   const isAdmin = loggedInUser?.role === 'admin';
 
+  // 직접 입력: 필드워크/슈퍼비전 고르는 칸 (건수·시간 같이 표시)
+  const entrySwitcher = activeSupervisee ? (() => {
+    const fwLogs = activeSupervisee.fieldworkLogs || [], svLogs = activeSupervisee.supervisionLogs || [];
+    const fwH = fwLogs.reduce((a, l) => a + timeToHours(l.startTime, l.endTime), 0);
+    const svH = svLogs.reduce((a, l) => a + (Number(l.hours) || 0), 0);
+    return (
+      <div style={{ display: 'inline-flex', background: C.pinkPale, borderRadius: 10, padding: 4, flexWrap: 'wrap' }}>
+        {[['fieldwork', '📋 필드워크', fwLogs.length, fwH], ['supervision', '🎓 슈퍼비전', svLogs.length, svH]].map(([k, l, n, h]) => (
+          <button key={k} onClick={() => setEntrySub(k)}
+                  style={{ padding: '8px 15px', fontSize: 14, borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                           background: entrySub === k ? C.white : 'transparent', color: entrySub === k ? C.pinkDeep : C.plumDark,
+                           fontWeight: entrySub === k ? 700 : 500, boxShadow: entrySub === k ? '0 1px 3px rgba(0,0,0,0.08)' : 'none' }}>
+            {l} <span style={{ fontSize: 12, fontWeight: 500, color: C.grayText }}>{n}건 · {Math.round(h * 10) / 10}hr</span>
+          </button>
+        ))}
+      </div>
+    );
+  })() : null;
+
   return (
     <div style={{ fontFamily: '"Pretendard", "맑은 고딕", -apple-system, sans-serif', background: C.bg, minHeight: '100vh', color: C.grayText }}>
       <header style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, padding: '24px 0', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
@@ -1304,17 +1323,8 @@ export default function App() {
             {/* 직접 입력: 필드워크·슈퍼비전을 하나로 묶음 (서식 없이 몇 건만 넣을 때) */}
             {(tab === 'entry' || tab === 'fieldwork' || tab === 'supervision') && (
               <>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {[['fieldwork', '📋 필드워크'], ['supervision', '🎓 슈퍼비전']].map(([k, l]) => (
-                    <button key={k} onClick={() => setEntrySub(k)}
-                            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-                                     background: entrySub === k ? C.pinkDeep : C.white, color: entrySub === k ? C.white : C.plumDark,
-                                     border: `1.5px solid ${entrySub === k ? C.pinkDeep : C.pinkLight}` }}>{l}</button>
-                  ))}
-                  <span style={{ fontSize: 12, color: C.grayText, marginLeft: 6 }}>월별 서식 없이 몇 건만 넣을 때 쓰세요. 서식에서 들어온 기록도 여기서 보입니다.</span>
-                </div>
-                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
-                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} switcher={entrySwitcher} />}
+                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} switcher={entrySwitcher} />}
               </>
             )}
             {tab === 'info' && <ExamInfoTab currentExam={activeSupervisee.examType} />}
@@ -1375,17 +1385,8 @@ export default function App() {
             {/* 직접 입력: 필드워크·슈퍼비전을 하나로 묶음 (서식 없이 몇 건만 넣을 때) */}
             {(tab === 'entry' || tab === 'fieldwork' || tab === 'supervision') && (
               <>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {[['fieldwork', '📋 필드워크'], ['supervision', '🎓 슈퍼비전']].map(([k, l]) => (
-                    <button key={k} onClick={() => setEntrySub(k)}
-                            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-                                     background: entrySub === k ? C.pinkDeep : C.white, color: entrySub === k ? C.white : C.plumDark,
-                                     border: `1.5px solid ${entrySub === k ? C.pinkDeep : C.pinkLight}` }}>{l}</button>
-                  ))}
-                  <span style={{ fontSize: 12, color: C.grayText, marginLeft: 6 }}>월별 서식 없이 몇 건만 넣을 때 쓰세요. 서식에서 들어온 기록도 여기서 보입니다.</span>
-                </div>
-                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
-                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} switcher={entrySwitcher} />}
+                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} switcher={entrySwitcher} />}
               </>
             )}
             {tab === 'info' && <ExamInfoTab currentExam={activeSupervisee.examType} />}
@@ -2202,7 +2203,8 @@ const inputStyle = {
 // ============================================
 // 📋 FIELDWORK LOG
 // ============================================
-function FieldworkLog({ activeSupervisee, exam, updateActive }) {
+function FieldworkLog({ activeSupervisee, exam, updateActive, switcher }) {
+  const [showHelp, setShowHelp] = useState(false);
   const data = activeSupervisee;
   const update = updateActive;
   const [sortBy, setSortBy] = useState('desc');
@@ -2333,50 +2335,28 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
 
   return (
     <div>
-      <InfoBanner>
-        💡 <strong>처음이세요? 이렇게 시작해보세요</strong><br/>
-        ① <strong>"+ 새 회기"</strong> 버튼을 눌러 카드를 추가하고<br/>
-        ② 날짜, 시작/종료 시간을 입력해주세요 (<strong>빠른 버튼 +30분, +1시간</strong>으로 더 편하게!)<br/>
-        ③ <strong>Direct(직접 치료)</strong> 시간만 입력하면 나머지는 자동으로 <strong>Indirect(간접 업무)</strong>로 계산돼요<br/>
-        <span style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>📌 한 달 기록이 월별 서식에 다 있으면 📄 월별 서식 탭에서 한 번에 올리는 게 더 빨라요</span>
-      </InfoBanner>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>📋 필드워크 기록</h2>
-          <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>총 {data.fieldworkLogs.length}건</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-                  style={{ padding: '8px 12px', fontSize: 13, border: `1px solid ${C.pinkLight}`, borderRadius: 6, background: C.white, color: C.plumDark, cursor: 'pointer' }}>
-            <option value="desc">최신순 ↓</option>
-            <option value="asc">오래된순 ↑</option>
-          </select>
-          {lastLog && (
-            <button onClick={copyLast} title="가장 최근 회기와 똑같이 복사 (날짜는 +1일)"
-                    style={{ padding: '10px 14px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkPale, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer' }}>
-              📋 지난 회기 복사
-            </button>
-          )}
-          <button onClick={add} style={addBtnStyle}>+ 새 회기</button>
-        </div>
+      {/* 맨 위: 필드워크/슈퍼비전 고르기 + 새로 넣기 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {switcher}
+        <button onClick={add} style={{ ...addBtnStyle, marginLeft: 'auto' }}>+ 새 회기</button>
       </div>
-
-      {/* 빠른 입력 토글 */}
-      <div style={{ marginBottom: 16 }}>
-        <button onClick={() => setQuickMode(!quickMode)}
-                style={{
-                  padding: '8px 14px', fontSize: 13, fontWeight: 500,
-                  background: quickMode ? C.pinkDeep : C.pinkSoft,
-                  color: quickMode ? C.white : C.plumDark,
-                  border: `1px solid ${C.pinkLight}`, borderRadius: 6, cursor: 'pointer'
-                }}>
-          ⚡ 빠른 입력 {quickMode ? 'ON' : 'OFF'}
-        </button>
-        <span style={{ marginLeft: 10, fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
-          한 줄로 빠르게 입력 (상세 편집은 카드 펼침)
-        </span>
+      {/* 작은 버튼 한 줄 */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', margin: '12px 2px 14px', fontSize: 12.5 }}>
+        {lastLog && <button onClick={copyLast} title="가장 최근 회기와 똑같이 복사 (날짜는 +1일)" style={entryLinkStyle}>📋 지난 회기 복사</button>}
+        <button onClick={() => setQuickMode(!quickMode)} style={{ ...entryLinkStyle, ...(quickMode ? { color: C.pinkDeep, fontWeight: 700 } : {}) }}>⚡ 빠른 입력{quickMode ? ' 켜짐' : ''}</button>
+        <button onClick={() => setSortBy(sortBy === 'desc' ? 'asc' : 'desc')} style={entryLinkStyle}>↕ {sortBy === 'desc' ? '최신순' : '오래된순'}</button>
+        <button onClick={() => setShowHelp(!showHelp)} style={{ ...entryLinkStyle, ...(showHelp ? { color: C.pinkDeep, fontWeight: 700 } : {}) }}>💡 사용법</button>
       </div>
+      {showHelp && (
+        <InfoBanner>
+        💡 <strong>직접 입력 사용법</strong><br/>
+        ① <strong>"+ 새 회기"</strong>를 누르면 맨 위에 새 기록이 펼쳐져요<br/>
+        ② 날짜, 시작/종료 시간을 넣어 주세요 (<strong>+30분, +1시간</strong> 버튼으로 더 편하게)<br/>
+        ③ <strong>Direct(직접 치료)</strong> 시간만 넣으면 나머지는 자동으로 <strong>Indirect(간접 업무)</strong>로 계산돼요<br/>
+        ④ 기록 줄을 누르면 펼쳐서 고치거나 🗑 지울 수 있어요<br/>
+        <span style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>📌 한 달 기록이 월별 서식에 다 있으면 📄 월별 서식 탭에서 한 번에 올리는 게 더 빨라요 · ⚡ 빠른 입력은 한 줄로 바로 넣는 칸이에요</span>
+        </InfoBanner>
+      )}
 
       {quickMode && <QuickAddRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
 
@@ -2414,7 +2394,6 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete, mineOnly
   const need = group.fw * (exam.svPercent / 100);
   const svAccepted = group.svAccepted !== undefined ? group.svAccepted : group.sv;
   const diff = svAccepted - need;
-  const groupExcluded = !mineOnly && group.svGroup > group.svIndividual ? (group.svGroup - group.svIndividual) : 0;
   let statusBadge;
   if (group.fw === 0) {
     statusBadge = null;
@@ -2423,12 +2402,6 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete, mineOnly
   } else {
     statusBadge = <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFF4D6', color: C.warnYellow }}>⚠ 슈퍼비전 {fmt(-diff)}hr 부족</span>;
   }
-  // 그룹 초과 배지 (그달에 그룹이 개별보다 많으면)
-  const groupExcessBadge = groupExcluded > 0 ? (
-    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFE5E5', color: C.dangerRed }}>
-      ⚠ 그룹 {fmt(groupExcluded)}hr 초과
-    </span>
-  ) : null;
 
   // ym 표시 (예: 2026-06 → 2026년 6월)
   const ymDisplay = group.ym === '미입력' ? '날짜 미입력' : (() => {
@@ -2459,7 +2432,6 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete, mineOnly
             {group.logs.length}회기 · <strong style={{ color: C.pinkDeep }}>{fmt(group.fw)}hr</strong>
           </span>
           {statusBadge}
-          {groupExcessBadge}
         </div>
         <span style={{
           fontSize: 14, color: C.grayText,
@@ -2468,7 +2440,7 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete, mineOnly
         }}>▼</span>
       </button>
       {open && (
-        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {group.logs.map(log => (
             <FieldworkItem
               key={log.id}
@@ -2777,7 +2749,6 @@ function FieldworkItem({ log, onUpdate, onDelete, defaultExpanded }) {
             <div style={{ fontSize: 11, color: C.grayText }}>· {log.supervisor}</div>
           )}
         </div>
-        <button onClick={async (e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
         <div style={{ fontSize: 13, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
       </div>
 
@@ -2875,6 +2846,9 @@ function FieldworkItem({ log, onUpdate, onDelete, defaultExpanded }) {
               />
             )}
           </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+            <button onClick={onDelete} style={{ ...delBtnStyle, fontSize: 13, padding: '7px 14px' }}>🗑 이 기록 지우기</button>
+          </div>
         </div>
       )}
     </div>
@@ -2939,7 +2913,8 @@ function CustomActivityInput({ customActivities, onChange }) {
 // ============================================
 // 🎓 SUPERVISION LOG
 // ============================================
-function SupervisionLog({ activeSupervisee, updateActive }) {
+function SupervisionLog({ activeSupervisee, updateActive, switcher }) {
+  const [showHelp, setShowHelp] = useState(false);
   const data = activeSupervisee;
   const update = updateActive;
   const [sortBy, setSortBy] = useState('desc');
@@ -3039,51 +3014,29 @@ function SupervisionLog({ activeSupervisee, updateActive }) {
 
   return (
     <div>
-      <InfoBanner>
-        💡 <strong>슈퍼비전 시간 기록하기</strong><br/>
-        ① <strong>"+ 새 슈퍼비전"</strong> 버튼을 누르고<br/>
-        ② 날짜, 받은 시간, 슈퍼바이저 이름을 입력<br/>
-        ③ <strong>👤 개별</strong>(1:1로 받음) 또는 <strong>👥 그룹</strong>(여러 명이 함께)을 꼭 선택해주세요<br/>
+      {/* 맨 위: 필드워크/슈퍼비전 고르기 + 새로 넣기 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {switcher}
+        <button onClick={add} style={{ ...addBtnStyle, marginLeft: 'auto' }}>+ 새 슈퍼비전</button>
+      </div>
+      {/* 작은 버튼 한 줄 */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', margin: '12px 2px 14px', fontSize: 12.5 }}>
+        {lastLog && <button onClick={copyLast} title="가장 최근 슈퍼비전과 똑같이 복사 (날짜는 +7일, 메모는 빈 값)" style={entryLinkStyle}>📋 지난 슈퍼비전 복사</button>}
+        <button onClick={() => setQuickMode(!quickMode)} style={{ ...entryLinkStyle, ...(quickMode ? { color: C.pinkDeep, fontWeight: 700 } : {}) }}>⚡ 빠른 입력{quickMode ? ' 켜짐' : ''}</button>
+        <button onClick={() => setSortBy(sortBy === 'desc' ? 'asc' : 'desc')} style={entryLinkStyle}>↕ {sortBy === 'desc' ? '최신순' : '오래된순'}</button>
+        <button onClick={() => setShowHelp(!showHelp)} style={{ ...entryLinkStyle, ...(showHelp ? { color: C.pinkDeep, fontWeight: 700 } : {}) }}>💡 사용법</button>
+      </div>
+      {showHelp && (
+        <InfoBanner>
+        💡 <strong>슈퍼비전 기록 사용법</strong><br/>
+        ① <strong>"+ 새 슈퍼비전"</strong>을 누르고<br/>
+        ② 날짜, 받은 시간, 슈퍼바이저 이름을 넣어 주세요<br/>
+        ③ <strong>👤 개별</strong>(1:1로 받음) 또는 <strong>👥 그룹</strong>(여러 명이 함께)을 꼭 골라 주세요<br/>
+        ④ 기록 줄을 누르면 펼쳐서 고치거나 🗑 지울 수 있어요<br/>
         <span style={{ fontSize: 11, color: '#8B3A3A', fontStyle: 'italic' }}>⚠️ QABA 규정: <strong>매월 필드워크 시간의 5%</strong>를 슈퍼비전 받아야 해요!</span><br/>
-        <span style={{ fontSize: 11, color: '#8B3A3A', fontStyle: 'italic' }}>⚠️ 그룹 슈퍼비전은 <strong>그 달의 개별 시간만큼만 인정</strong>됩니다 (즉 그룹만 받으면 인정 안 됨)</span>
-      </InfoBanner>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.plumDark }}>🎓 슈퍼비전 기록</h2>
-          <p style={{ margin: '4px 0 0 0', fontSize: 13, color: C.grayText }}>총 {data.supervisionLogs.length}건</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-                  style={{ padding: '8px 12px', fontSize: 13, border: `1px solid ${C.pinkLight}`, borderRadius: 6, background: C.white, color: C.plumDark, cursor: 'pointer' }}>
-            <option value="desc">최신순 ↓</option>
-            <option value="asc">오래된순 ↑</option>
-          </select>
-          {lastLog && (
-            <button onClick={copyLast} title="가장 최근 슈퍼비전과 똑같이 복사 (날짜는 +7일, 메모는 빈 값)"
-                    style={{ padding: '10px 14px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkPale, border: `1px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer' }}>
-              📋 지난 슈퍼비전 복사
-            </button>
-          )}
-          <button onClick={add} style={addBtnStyle}>+ 새 슈퍼비전</button>
-        </div>
-      </div>
-
-      {/* 빠른 입력 토글 */}
-      <div style={{ marginBottom: 16 }}>
-        <button onClick={() => setQuickMode(!quickMode)}
-                style={{
-                  padding: '8px 14px', fontSize: 13, fontWeight: 500,
-                  background: quickMode ? C.pinkDeep : C.pinkSoft,
-                  color: quickMode ? C.white : C.plumDark,
-                  border: `1px solid ${C.pinkLight}`, borderRadius: 6, cursor: 'pointer'
-                }}>
-          ⚡ 빠른 입력 {quickMode ? 'ON' : 'OFF'}
-        </button>
-        <span style={{ marginLeft: 10, fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
-          한 줄로 빠르게 입력 (메모는 카드 펼쳐서 추가)
-        </span>
-      </div>
+        <span style={{ fontSize: 11, color: '#8B3A3A', fontStyle: 'italic' }}>⚠️ 그룹 슈퍼비전은 <strong>그 달의 개별 시간만큼만 인정</strong>됩니다 (즉 그룹만 받으면 인정 안 됨){data.mineOnly ? ' — 이 기록장은 "내가 맡은 몫만 계산"이 켜져 있어 그룹도 그대로 인정해요' : ''}</span>
+        </InfoBanner>
+      )}
 
       {quickMode && <QuickAddSvRow onAdd={quickAdd} mainSupervisor={data.mainSupervisor} />}
 
@@ -3160,7 +3113,7 @@ function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete, mineOnly }) 
         }}>▼</span>
       </button>
       {open && (
-        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {group.logs.map(log => (
             <SupervisionItem
               key={log.id}
@@ -3318,7 +3271,6 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
             </div>
           )}
         </div>
-        <button onClick={async (e) => { e.stopPropagation(); onDelete(); }} style={delBtnStyle}>🗑</button>
         <div style={{ fontSize: 13, color: C.grayText, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</div>
       </div>
 
@@ -3377,6 +3329,9 @@ function SupervisionItem({ log, onUpdate, onDelete, defaultExpanded }) {
             <Field label="메모" flex={1}>
               <textarea value={log.notes || ''} onChange={e => onUpdate({ notes: e.target.value })} style={{ ...logInputStyle, minHeight: 50, fontFamily: 'inherit' }} placeholder="이번 슈퍼비전에서 논의한 내용·받은 피드백 등 (선택사항)" />
             </Field>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+            <button onClick={onDelete} style={{ ...delBtnStyle, fontSize: 13, padding: '7px 14px' }}>🗑 이 기록 지우기</button>
           </div>
         </div>
       )}
@@ -3687,9 +3642,10 @@ const EmptyState = ({ msg, sub }) => (
 );
 
 const rowStyle = { display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' };
-const logCardStyle = { background: C.white, borderRadius: 12, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', borderLeft: `3px solid ${C.pinkLight}` };
+const logCardStyle = { background: C.white, borderRadius: 10, padding: '12px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)', borderLeft: `3px solid ${C.pinkLight}` };
 const logInputStyle = { padding: '9px 12px', fontSize: 14, border: '1px solid #E0D5D8', borderRadius: 6, background: C.inputBg, fontFamily: 'inherit', outline: 'none' };
 const addBtnStyle = { padding: '10px 20px', fontSize: 14, fontWeight: 600, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer', boxShadow: '0 2px 4px rgba(216,136,150,0.3)' };
+const entryLinkStyle = { padding: '4px 2px', background: 'none', border: 'none', color: C.plumDark, cursor: 'pointer', fontSize: 12.5, fontFamily: 'inherit' };
 const delBtnStyle = { padding: '8px 12px', background: '#FFF0F0', border: '1px solid #FFD0D0', color: C.dangerRed, borderRadius: 6, cursor: 'pointer', fontSize: 16 };
 
 // ============================================
