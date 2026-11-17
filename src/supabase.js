@@ -136,7 +136,13 @@ export const authLogin = async (userId, password) => {
     }
     const meta = data.user?.user_metadata || {};
     const appMeta = data.user?.app_metadata || {};
-    const role = appMeta.role || meta.role || 'user';
+    // 역할은 본인이 고칠 수 없는 칸(app_metadata)만 봄. 원장님이 사용자 관리에서 만든 계정만 'admin'/'user' 표시가 있음
+    // → 표시가 없는 계정(스스로 회원가입한 계정 등)은 들어올 수 없음
+    const role = appMeta.role;
+    if (role !== 'admin' && role !== 'user') {
+      saveSession(null);
+      return { success: false, error: '등록되지 않은 계정입니다. 검단ABA에 문의해주세요' };
+    }
     // 정지 계정 차단 (is_active === false 만 차단, 없으면 활성 간주)
     if ((appMeta.is_active ?? meta.is_active) === false) {
       saveSession(null);
