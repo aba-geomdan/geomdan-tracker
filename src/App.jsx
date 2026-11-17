@@ -245,6 +245,7 @@ export default function App() {
           mainSupervisor: sv.main_supervisor || '',
           supervisors: sv.supervisors || [],
           startDate: sv.start_date || '',
+          mineOnly: !!sv.mine_only, // 내가 맡은 몫만 계산 (다른 슈퍼바이저 서식 없음 → 그룹 한도 안 따짐)
           ownerName: sv._ownerName || null, // 다른 사용자 기록장이면 그 사람 이름
           ownerUid: sv.owner_uid || userId,  // 월별 서식 원본을 그 사람 폴더에 보관
           monthlyLogs: mLogs || [],
@@ -323,6 +324,7 @@ export default function App() {
     if ('mainSupervisor' in c) dbChanges.mainSupervisor = c.mainSupervisor;
     if ('supervisors' in c) dbChanges.supervisors = c.supervisors;
     if ('startDate' in c) dbChanges.startDate = c.startDate;
+    if ('mineOnly' in c) dbChanges.mineOnly = !!c.mineOnly;
 
     if (Object.keys(dbChanges).length > 0) {
       setSupervisees(prev => prev.map(s =>
@@ -557,7 +559,7 @@ export default function App() {
       'Group (그룹)',
       Math.round(stats.svGroup * 10) / 10,
       Math.round(stats.svGroupAccepted * 10) / 10,
-      '월별 그달 개별 ≤',
+      activeSupervisee.mineOnly ? '그대로 인정 (내가 맡은 몫만 계산)' : '월별 그달 개별 ≤',
       stats.svGroupExcluded > 0 ? `⚠ ${fmt(stats.svGroupExcluded)}hr 초과 (인정 안 됨)` : '✓ 전부 인정'
     ]);
     svSheet.push([]);
@@ -688,7 +690,7 @@ export default function App() {
     msSheet.push(['Supervisee', supervisee, '', '시험 유형', activeSupervisee.examType]);
     msSheet.push(['보고서 작성일', today]);
     msSheet.push([]);
-    msSheet.push(['ℹ️ QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간']);
+    msSheet.push(['ℹ️ QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 월 최소 20시간 ~ 최대 140시간' + (activeSupervisee.mineOnly ? ' · ※ 이 기록은 작성 슈퍼바이저가 맡은 몫만 계산함 (그룹 그대로 인정, 다른 슈퍼바이저 기록과 합쳐 50% 확인 필요)' : '')]);
     msSheet.push([]);
     msSheet.push([
       'Year-Month (년-월)',
@@ -965,9 +967,9 @@ export default function App() {
       if (l.type === 'group') monthMap[ym].svGroup += h;
       else monthMap[ym].svIndividual += h;
     });
-    // 월별 인정 시간 계산 (그룹은 그 달의 개별 시간만큼만)
+    // 월별 인정 시간 계산 (그룹은 그 달의 개별 시간만큼만 · '내가 맡은 몫만 계산'이면 그룹도 그대로)
     Object.values(monthMap).forEach(m => {
-      const monthGroupAccepted = Math.min(m.svGroup, m.svIndividual);
+      const monthGroupAccepted = activeSupervisee.mineOnly ? m.svGroup : Math.min(m.svGroup, m.svIndividual);
       m.svGroupExcluded = m.svGroup - monthGroupAccepted;
       m.svAccepted = m.svIndividual + monthGroupAccepted;
     });
@@ -1260,6 +1262,12 @@ export default function App() {
                     <span style={{ fontSize: 12, padding: '3px 9px', borderRadius: 12, fontWeight: 700, background: activeSupervisee.ownerName ? '#EEF4FB' : C.pinkPale, color: activeSupervisee.ownerName ? '#4F7099' : C.plumDark }}>
                       {activeSupervisee.ownerName ? `${activeSupervisee.ownerName} 계정` : '내 수련생'}
                     </span>
+                    <label title="다른 슈퍼바이저 서식이 없을 때: 내 서식에 적힌 슈퍼비전(그룹 포함)을 그대로 인정하고 5%도 내 몫끼리 계산합니다"
+                           style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, padding: '4px 11px', borderRadius: 16, cursor: 'pointer',
+                                    background: activeSupervisee.mineOnly ? '#F1ECFA' : C.white, border: `1px solid ${activeSupervisee.mineOnly ? '#C9B6E4' : C.pinkLight}`, color: '#5B4A7A', fontWeight: 600 }}>
+                      <input type="checkbox" checked={!!activeSupervisee.mineOnly} onChange={(e) => updateActive({ mineOnly: e.target.checked })} style={{ margin: 0 }} />
+                      내가 맡은 몫만 계산
+                    </label>
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <select value={activeSupervisee.examType} onChange={async (e) => {
                         const newExam = e.target.value;
@@ -1693,10 +1701,10 @@ function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
             bgColor={C.pinkSoft}
             unit="hr"
             isPercent={true}
-            note={stats.svGroupExcluded > 0 ? `⚠ 그룹 ${fmt(stats.svGroupExcluded)}hr은 월별 한도 초과로 인정 안 됨 (입력 ${fmt(stats.svTotal)}hr → 인정 ${fmt(stats.svAccepted)}hr) · 자세한 월별 충족 여부는 아래 월별 요약 참고` : (stats.svTotal > 0 ? `💡 QABA는 매월 단위로 5% 충족을 평가합니다. 위 진행률은 누적 참고용이며, 월별 미충족 여부는 아래 표에서 확인하세요` : null)}
+            note={data.mineOnly ? 'ℹ 내가 맡은 몫만 계산하고 있어요 (그룹도 그대로 인정). 그룹이 전체의 50%를 넘는지는 다른 슈퍼바이저 기록과 합쳐서 확인해야 해요.' : stats.svGroupExcluded > 0 ? `⚠ 그룹 ${fmt(stats.svGroupExcluded)}hr은 월별 한도 초과로 인정 안 됨 (입력 ${fmt(stats.svTotal)}hr → 인정 ${fmt(stats.svAccepted)}hr) · 자세한 월별 충족 여부는 아래 월별 요약 참고` : (stats.svTotal > 0 ? `💡 QABA는 매월 단위로 5% 충족을 평가합니다. 위 진행률은 누적 참고용이며, 월별 미충족 여부는 아래 표에서 확인하세요` : null)}
             extraInfo={stats.svTotal > 0 ? [
               { label: '👤 개별 (Individual)', value: stats.svIndividual, color: C.goldDeep, plain: true, hint: `전체 입력의 ${(100 - stats.svGroupPct).toFixed(0)}%` },
-              { label: '👥 그룹 (Group, 월별 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ 인정 ${fmt(stats.svGroupAccepted)}hr만 (${fmt(stats.svGroupExcluded)}hr 초과)` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
+              { label: data.mineOnly ? '👥 그룹 (Group, 그대로 인정)' : '👥 그룹 (Group, 월별 50%)', value: stats.svGroup, color: stats.svGroupOver ? C.dangerRed : C.plumDark, plain: true, hint: stats.svGroupOver ? `⚠ 인정 ${fmt(stats.svGroupAccepted)}hr만 (${fmt(stats.svGroupExcluded)}hr 초과)` : `전체의 ${stats.svGroupPct.toFixed(0)}%` }
             ] : null}
           />
         </div>
@@ -1787,6 +1795,7 @@ function Dashboard({ activeSupervisee, stats, exam, updateActive }) {
           </div>
           <p style={{ margin: '12px 0 0 0', fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>
             💡 QABA 규정: 월별 필드워크 시간의 5%를 그 달 안에 슈퍼비전 받아야 합니다 · 그룹 슈퍼비전은 그 달의 개별 시간만큼만 인정 (50% 한도) · 월 최소 20시간 ~ 최대 140시간
+              {data.mineOnly && <><br />ℹ 이 기록장은 <strong>내가 맡은 몫만 계산</strong>하고 있어서 그룹도 그대로 인정합니다. 그룹 50%는 다른 슈퍼바이저 기록과 합쳐서 확인하세요.</>}
           </p>
         </Section>
       )}
@@ -2317,10 +2326,10 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
     });
     // 그룹별 인정 시간 계산
     Object.values(groups).forEach(g => {
-      g.svAccepted = g.svIndividual + Math.min(g.svGroup, g.svIndividual);
+      g.svAccepted = g.svIndividual + (data.mineOnly ? g.svGroup : Math.min(g.svGroup, g.svIndividual));
     });
     return Object.values(groups).sort((a, b) => sortBy === 'desc' ? b.ym.localeCompare(a.ym) : a.ym.localeCompare(b.ym));
-  }, [sortedLogs, data.supervisionLogs, sortBy]);
+  }, [sortedLogs, data.supervisionLogs, sortBy, data.mineOnly]);
 
   return (
     <div>
@@ -2377,6 +2386,7 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
             <MonthGroup
               key={group.ym}
               group={group}
+              mineOnly={!!data.mineOnly}
               exam={exam}
               recentlyAddedId={recentlyAddedId}
               onUpdate={upd}
@@ -2390,7 +2400,7 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
 }
 
 // MonthGroup - 월별 그룹 (접기/펼치기)
-function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
+function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete, mineOnly }) {
   // 최근 추가된 항목 있는 그룹은 자동 펼침
   const hasRecent = group.logs.some(l => l.id === recentlyAddedId);
   const [open, setOpen] = useState(hasRecent);
@@ -2404,7 +2414,7 @@ function MonthGroup({ group, exam, recentlyAddedId, onUpdate, onDelete }) {
   const need = group.fw * (exam.svPercent / 100);
   const svAccepted = group.svAccepted !== undefined ? group.svAccepted : group.sv;
   const diff = svAccepted - need;
-  const groupExcluded = group.svGroup > group.svIndividual ? (group.svGroup - group.svIndividual) : 0;
+  const groupExcluded = !mineOnly && group.svGroup > group.svIndividual ? (group.svGroup - group.svIndividual) : 0;
   let statusBadge;
   if (group.fw === 0) {
     statusBadge = null;
@@ -3083,6 +3093,7 @@ function SupervisionLog({ activeSupervisee, updateActive }) {
             <SvMonthGroup
               key={group.ym}
               group={group}
+              mineOnly={!!data.mineOnly}
               recentlyAddedId={recentlyAddedId}
               onUpdate={upd}
               onDelete={del}
@@ -3095,7 +3106,7 @@ function SupervisionLog({ activeSupervisee, updateActive }) {
 }
 
 // 슈퍼비전 월별 그룹
-function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete }) {
+function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete, mineOnly }) {
   const hasRecent = group.logs.some(l => l.id === recentlyAddedId);
   const [open, setOpen] = useState(hasRecent);
 
@@ -3136,7 +3147,7 @@ function SvMonthGroup({ group, recentlyAddedId, onUpdate, onDelete }) {
               <span style={{ color: C.plumDark, fontWeight: 600 }}>그룹 {fmt(group.groupTotal)}</span>
             </span>
           )}
-          {group.groupTotal > group.individualTotal && (
+          {!mineOnly && group.groupTotal > group.individualTotal && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 10, background: '#FFE5E5', color: C.dangerRed }}>
               ⚠ 그룹 {fmt(group.groupTotal - group.individualTotal)}hr 초과
             </span>
@@ -4829,7 +4840,7 @@ function OverviewTab({ supervisees, onSelect }) {
         else monthMap[ym].svIndividual += h;
       });
       Object.values(monthMap).forEach(m => {
-        m.svAccepted = m.svIndividual + Math.min(m.svGroup, m.svIndividual);
+        m.svAccepted = m.svIndividual + (sv.mineOnly ? m.svGroup : Math.min(m.svGroup, m.svIndividual));
       });
 
       const svAccepted = Object.values(monthMap).reduce((s, m) => s + m.svAccepted, 0);
