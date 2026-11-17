@@ -104,8 +104,14 @@ function normalize(result) {
 }
 
 /* ---------------- 확인·고치기 화면 ---------------- */
-function ReviewModal({ draft, setDraft, onSave, onClose, busy, existsMonth }) {
+function ReviewModal({ draft, setDraft, onSave, onClose, busy, existsMonth, manualLogs, err }) {
   const t = computeTotals(draft.rows);
+  // 이 달에 ✏️ 직접 입력한 기록 (서식에서 들어온 것 빼고) — 같은 날이 서식에도 있으면 시간이 두 번 더해짐
+  const inMonth = (l) => draft.month && String(l.date || '').startsWith(draft.month);
+  const manFw = (manualLogs.fw || []).filter(inMonth), manSv = (manualLogs.sv || []).filter(inMonth);
+  const formDates = new Set(draft.rows.map((r) => r.date).filter(Boolean));
+  const overlap = [...new Set([...manFw, ...manSv].map((l) => l.date).filter((d) => formDates.has(d)))].sort();
+  const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
   const setRow = (i, patch) => setDraft((d) => ({ ...d, rows: d.rows.map((r, j) => (j === i ? { ...r, ...patch } : r)) }));
   const setCell = (i, k, f, v) => setDraft((d) => ({ ...d, rows: d.rows.map((r, j) => (j === i ? { ...r, [k]: { ...r[k], [f]: v } } : r)) }));
   const inp = { padding: '4px 5px', fontSize: 12, border: `1px solid ${C.pinkLight}`, borderRadius: 4, background: C.inputBg, width: 52 };
@@ -114,7 +120,10 @@ function ReviewModal({ draft, setDraft, onSave, onClose, busy, existsMonth }) {
       <input value={draft.rows[i][k].start} onChange={(e) => setCell(i, k, 'start', e.target.value)} placeholder="시작" style={inp} />
       <span>~</span>
       <input value={draft.rows[i][k].end} onChange={(e) => setCell(i, k, 'end', e.target.value)} placeholder="끝" style={inp} />
-      <span style={{ fontSize: 11, color: C.grayText, minWidth: 30, textAlign: 'right' }}>{cellHours(draft.rows[i][k]) ? r1(cellHours(draft.rows[i][k])) + 'h' : ''}</span>
+      {diffH(draft.rows[i][k].start, draft.rows[i][k].end) != null
+        ? <span title="시작~끝으로 계산" style={{ fontSize: 11, color: C.grayText, width: 40, textAlign: 'right' }}>{r1(cellHours(draft.rows[i][k]))}h</span>
+        : <input value={draft.rows[i][k].hours ?? ''} onChange={(e) => setCell(i, k, 'hours', e.target.value.replace(/[^\d.]/g, ''))} placeholder="시간" title="시간대가 없으면 시간 수만 적어도 됩니다"
+                 style={{ ...inp, width: 40, textAlign: 'right' }} />}
     </div>
   );
   const pctOk = t.percent >= 5;
@@ -138,6 +147,15 @@ function ReviewModal({ draft, setDraft, onSave, onClose, busy, existsMonth }) {
             </label>
             {existsMonth && <span style={{ fontSize: 12.5, color: C.warnYellow, fontWeight: 700 }}>⚠ 이 달 서식이 이미 있습니다. 저장하면 그 달 서식에서 들어온 기록만 새것으로 바뀝니다.</span>}
           </div>
+
+          {(manFw.length > 0 || manSv.length > 0) && (
+            <div style={{ padding: '10px 14px', background: overlap.length ? '#FFF0F0' : '#FFF8E6', border: `1px solid ${overlap.length ? '#FFD0D0' : '#F3DFB0'}`, borderRadius: 8, fontSize: 12.5, color: overlap.length ? C.dangerRed : '#8A6D2B', lineHeight: 1.7 }}>
+              <b>{overlap.length ? '⚠ 같은 날짜가 두 번 들어가요' : 'ℹ 이 달에 직접 입력한 기록이 있어요'}</b><br />
+              ✏️ 직접 입력으로 넣은 {draft.month} 기록: 필드워크 {manFw.length}건 · 슈퍼비전 {manSv.length}건
+              {overlap.length > 0 && <><br />서식에도 있는 날: <b>{overlap.map(md).join(', ')}</b> → 이대로 저장하면 이 날 시간이 두 번 더해집니다. ✏️ 직접 입력 탭에서 그날 기록을 지우거나, 아래 표에서 그 줄을 빼 주세요.</>}
+              {overlap.length === 0 && <><br />서식과 겹치는 날은 없습니다. 같은 일을 다른 날짜로 적어 두지 않았는지만 확인해 주세요.</>}
+            </div>
+          )}
 
           <div style={{ overflowX: 'auto', border: `1px solid ${C.pinkLight}`, borderRadius: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -198,6 +216,7 @@ function ReviewModal({ draft, setDraft, onSave, onClose, busy, existsMonth }) {
                    style={{ flex: '1 1 240px', padding: '6px 8px', border: `1px solid ${C.pinkLight}`, borderRadius: 6, background: C.inputBg }} />
           </div>
 
+          {err && <div style={{ padding: '10px 14px', background: '#FFF0F0', color: C.dangerRed, borderRadius: 8, fontSize: 13, fontWeight: 700 }}>{err}</div>}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button onClick={onClose} disabled={busy} style={{ padding: '10px 18px', background: C.white, border: `1px solid ${C.pinkLight}`, borderRadius: 8, color: C.grayText, cursor: 'pointer' }}>취소</button>
             <button onClick={onSave} disabled={busy || !draft.month} style={{ padding: '10px 22px', background: C.pinkDeep, border: 'none', borderRadius: 8, color: C.white, fontWeight: 700, cursor: 'pointer', opacity: busy || !draft.month ? 0.6 : 1 }}>
@@ -255,28 +274,33 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
       const month = d.month;
       const sup = d.supervisor || '';
       // 1) 원본 보관
-      let file_path = (logs.find((l) => l.month === month) || {}).file_path || null;
+      let file_path = d._filePath || (logs.find((l) => l.month === month) || {}).file_path || null;
       if (pendingFile) {
         const up = await uploadMonthlyFile(supervisee.ownerUid, supervisee.id, month, pendingFile);
         if (up.path) file_path = up.path;
         else showToast && showToast(up.error || '원본은 저장하지 못했습니다', 'danger');
       }
       // 2) 같은 달 서식에서 들어온 예전 기록 지우기 (직접 입력한 기록은 그대로)
-      for (const l of (supervisee.fieldworkLogs || [])) if (isFromMonth(l, month, 'fw')) await deleteFieldworkLog(l.id);
-      for (const l of (supervisee.supervisionLogs || [])) if (isFromMonth(l, month, 'sv')) await deleteSupervisionLog(l.id);
+      let fail = 0;
+      for (const l of (supervisee.fieldworkLogs || [])) if (isFromMonth(l, month, 'fw')) { if (!(await deleteFieldworkLog(l.id))) fail++; }
+      for (const l of (supervisee.supervisionLogs || [])) if (isFromMonth(l, month, 'sv')) { if (!(await deleteSupervisionLog(l.id))) fail++; }
       // 3) 새 기록 넣기
       const rows = d.rows.filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.date));
       for (const r of rows) {
-        let nextStart = '09:00'; // 시간대가 없으면 앞 칸이 끝난 시각부터 이어서 적음
+        // 시간대가 없으면 앞 칸이 끝난 시각부터 이어서 적음. 하루 시간이 많아 자정을 넘기면 더 일찍 시작
+        const loose = ['a', 'b'].reduce((s2, k) => s2 + (r[k] && !(toHM(r[k].start) && diffH(r[k].start, r[k].end)) ? cellHours(r[k]) : 0), 0);
+        const startMin = Math.max(0, Math.min(9 * 60, Math.floor((24 * 60 - 1) - loose * 60)));
+        let nextStart = `${String(Math.floor(startMin / 60)).padStart(2, '0')}:${String(startMin % 60).padStart(2, '0')}`;
         for (const k of ['a', 'b']) {
           const h = cellHours(r[k]);
           if (!h) continue;
           const start = toHM(r[k].start) || nextStart;
           const end = toHM(r[k].end) && diffH(r[k].start, r[k].end) ? toHM(r[k].end) : addH(start, h);
-          await createFieldworkLog(supervisee.id, {
+          const ok = await createFieldworkLog(supervisee.id, {
             date: r.date, startTime: start, endTime: end, direct: k === 'a' ? h : 0, supervisor: sup,
             activities: [], customActivities: [monthTag(month)],
           });
+          if (!ok) fail++;
           nextStart = end;
         }
         for (const k of ['c', 'd']) {
@@ -284,10 +308,11 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
           if (!h) continue;
           const flags = `${r.observation ? ' [관찰 Y]' : ''}${r.competencies ? ' [역량·연구 Y]' : ''}`;
           const tf = toHM(r[k].start) && toHM(r[k].end) ? ` ${toHM(r[k].start)}~${toHM(r[k].end)}` : '';
-          await createSupervisionLog(supervisee.id, {
+          const ok = await createSupervisionLog(supervisee.id, {
             date: r.date, hours: h, type: k === 'c' ? 'individual' : 'group', supervisor: sup,
             notes: `[${monthTag(month)}]${tf}${flags}`,
           });
+          if (!ok) fail++;
         }
       }
       // 4) 월별 서식 기록 저장
@@ -295,7 +320,15 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
         month, file_path, rating: d.rating || null, notes: d.notes || '', live_contact: !!d.live_contact,
         supervisor: sup, rows, totals: computeTotals(rows),
       });
-      if (res && res.error) throw new Error(res.error);
+      if (!res || res.error) fail++;
+      if (fail > 0) {
+        // 확인 화면은 그대로 두고 다시 저장하게 함 (다시 저장하면 이 달 서식 기록을 지우고 처음부터 다시 넣음)
+        await onChanged();
+        setPendingFile(null);
+        setDraft((prev) => (prev ? { ...prev, _filePath: file_path } : prev)); // 원본은 이미 올라갔으니 다시 올리지 않음
+        setErr(`⚠ ${fail}건이 저장되지 않았습니다 (인터넷 연결 확인). ✅ 저장을 한 번 더 눌러 주세요.`);
+        return;
+      }
       setDraft(null); setPendingFile(null);
       showToast && showToast(`✅ ${month} 서식을 저장했습니다`, 'good');
       await onChanged();
@@ -381,8 +414,10 @@ export default function MonthlyLogsTab({ supervisee, onChanged, showToast }) {
       </div>
 
       {draft && (
-        <ReviewModal draft={draft} setDraft={setDraft} onSave={save} onClose={() => { if (!saving) { setDraft(null); setPendingFile(null); } }}
-                     busy={saving} existsMonth={!!logs.find((l) => l.month === draft.month)} />
+        <ReviewModal draft={draft} setDraft={setDraft} onSave={save} onClose={() => { if (!saving) { setDraft(null); setPendingFile(null); setErr(''); } }}
+                     busy={saving} err={err} existsMonth={!!logs.find((l) => l.month === draft.month)}
+                     manualLogs={{ fw: (supervisee.fieldworkLogs || []).filter((l) => !(l.customActivities || []).some((c) => String(c).startsWith('월별서식:'))),
+                                   sv: (supervisee.supervisionLogs || []).filter((l) => !String(l.notes || '').startsWith('[월별서식:')) }} />
       )}
     </div>
   );
