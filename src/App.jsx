@@ -191,7 +191,7 @@ export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [entrySub, setEntrySub] = useState('fieldwork'); // 직접 입력 탭 안: 필드워크 / 슈퍼비전
   const [ceuKey, setCeuKey] = useState(0); // 백업 복원으로 CEU가 바뀌면 CEU 탭을 새로 불러옴
-  const [adminViewMode, setAdminViewMode] = useState('admin'); // 'admin' | 'user-preview' (관리자가 일반 사용자 화면 미리보기)
+  const [adminSection, setAdminSection] = useState('records'); // 관리자 큰 칸: 'records' 수련생 기록 | 'ceu' 내 연수시간 | 'users' 사용자 관리
   const [showGuide, setShowGuide] = useState(false);
   const [showManageSv, setShowManageSv] = useState(false);
   const [toast, setToast] = useState(null);
@@ -207,7 +207,7 @@ export default function App() {
     setLoading(true);
     try {
       let supList = await fetchSupervisees(userId);
-      // 관리자: 내가 추가한 사용자들의 기록장도 같이 (👤 고르는 칸에서 '사용자 기록장'으로 보임)
+      // 관리자: 내가 추가한 사용자들의 기록장도 같이 (수련생 기록 왼쪽 목록의 '계정 있는 사용자 기록장')
       if (userRole === 'admin') {
         const [all, users] = await Promise.all([fetchAllSupervisees(), fetchAllUsers()]);
         const nameOf = {};
@@ -1098,20 +1098,7 @@ export default function App() {
     );
   }
 
-  // 🔐 관리자 페이지 (admin 역할이고 admin 모드일 때)
-  if (loggedInUser?.role === 'admin' && adminViewMode === 'admin') {
-    return (
-      <>
-        <AdminPage
-          currentUser={loggedInUser}
-          onLogout={handleLogout}
-          onSwitchToUserMode={() => { setAdminViewMode('user-preview'); reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu); }}
-        />
-        {modalDialog && <AppDialog {...modalDialog} />}
-        {toast && <Toast {...toast} />}
-      </>
-    );
-  }
+  const isAdmin = loggedInUser?.role === 'admin';
 
   return (
     <div style={{ fontFamily: '"Pretendard", "맑은 고딕", -apple-system, sans-serif', background: C.bg, minHeight: '100vh', color: C.grayText }}>
@@ -1126,39 +1113,7 @@ export default function App() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {/* 슈퍼바이지 드롭다운/관리는 관리자만 (일반 사용자는 본인 1명 고정) */}
-            {loggedInUser?.role === 'admin' && data.supervisees && data.supervisees.length > 0 && (
-              <>
-                <select value={data.activeSuperviseeId || ''}
-                        onChange={e => update({ activeSuperviseeId: e.target.value })}
-                        title="현재 보고 있는 슈퍼바이지"
-                        style={{ padding: '10px 12px', fontSize: 13, fontWeight: 600, color: C.plumDark, background: C.pinkSoft, border: `1.5px solid ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
-                  {data.supervisees.some(sv => !sv.ownerName) && (
-                    <optgroup label="내 슈퍼바이지">
-                      {data.supervisees.filter(sv => !sv.ownerName).map(sv => (
-                        <option key={sv.id} value={sv.id}>👤 {sv.name} ({sv.examType})</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {data.supervisees.some(sv => sv.ownerName) && (
-                    <optgroup label="사용자 기록장">
-                      {data.supervisees.filter(sv => sv.ownerName).map(sv => (
-                        <option key={sv.id} value={sv.id}>🧑 {sv.name} ({sv.examType}) · {sv.ownerName} 계정</option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-                <button onClick={() => setShowManageSv(true)} title="슈퍼바이지 추가·삭제·이름 변경"
-                        style={headerBtnStyle}>👥</button>
-              </>
-            )}
-            {loggedInUser?.role === 'admin' && data.supervisees && data.supervisees.length === 0 && (
-              <button onClick={() => setShowManageSv(true)}
-                      style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, color: C.white, background: C.pinkDeep, border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-                + 첫 슈퍼바이지 추가
-              </button>
-            )}
-            {activeSupervisee && (
+            {!isAdmin && tab !== 'ceu' && activeSupervisee && (
               <select value={activeSupervisee.examType} onChange={async (e) => {
                 const newExam = e.target.value;
                 const hasData = (activeSupervisee.fieldworkLogs || []).length > 0 || (activeSupervisee.supervisionLogs || []).length > 0;
@@ -1171,8 +1126,10 @@ export default function App() {
                 <option value="QASP-S">QASP-S · 1,000hr</option>
               </select>
             )}
-            <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
-                    style={headerBtnStyle} disabled={!activeSupervisee}>📊</button>
+            {!isAdmin && tab !== 'ceu' && (
+              <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
+                      style={headerBtnStyle} disabled={!activeSupervisee}>📊</button>
+            )}
             <button onClick={exportData} title="내 기록 전체를 파일로 받기 (연수시간 포함, 이수증 사진은 제외)"
                     style={headerBtnStyle}>💾</button>
             {/* 복원은 원장님(관리자)만 — 바깥 사용자가 잘못 눌러 기록이 엉키지 않게 */}
@@ -1185,14 +1142,6 @@ export default function App() {
             )}
             <button onClick={() => setShowGuide(true)} title="사용 안내 보기"
                     style={headerBtnStyle}>📖</button>
-            {/* 관리자가 미리보기 모드일 때 돌아가기 버튼 */}
-            {loggedInUser?.role === 'admin' && (
-              <button onClick={() => setAdminViewMode('admin')} 
-                      title="관리자 페이지로 돌아가기"
-                      style={{ padding: '10px 14px', fontSize: 12, fontWeight: 700, color: C.white, background: C.goldDeep, border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-                🔐 관리자 페이지
-              </button>
-            )}
             <button onClick={handleLogout} 
                     title={`로그아웃 (현재: ${loggedInUser?.name || loggedInUser?.user_id})`}
                     style={{ ...headerBtnStyle, display: 'flex', alignItems: 'center', gap: 4, padding: '8px 12px', fontSize: 12 }}>
@@ -1202,6 +1151,176 @@ export default function App() {
         </div>
       </header>
 
+      {isAdmin ? (
+        <>
+      <style>{`
+        .adm-wrap { display: flex; gap: 18px; align-items: flex-start; }
+        .adm-side { width: 250px; flex-shrink: 0; position: sticky; top: 12px; }
+        .adm-main { flex: 1; min-width: 0; }
+        @media (max-width: 820px) { .adm-wrap { flex-direction: column; align-items: stretch; } .adm-side { width: auto; position: static; } .adm-mode { padding: 10px 14px !important; font-size: 13.5px !important; } }
+      `}</style>
+      {/* 관리자: 큰 칸 세 개 */}
+      <nav style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}` }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '12px 24px 0', display: 'flex', gap: 6, overflowX: 'auto' }}>
+          {[
+            { id: 'records', l: '🧑‍🎓 수련생 기록' },
+            ...(loggedInUser?.ceu ? [{ id: 'ceu', l: '🏅 내 연수시간' }] : []),
+            { id: 'users', l: '👥 사용자 관리' },
+          ].map(m => (
+            <button key={m.id} className="adm-mode" onClick={() => {
+                      if (m.id === 'records' && adminSection !== 'records') reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu);
+                      setAdminSection(m.id);
+                    }}
+                    style={{ padding: '12px 22px', fontSize: 15, fontWeight: 700, border: 'none', borderRadius: '10px 10px 0 0', cursor: 'pointer', whiteSpace: 'nowrap',
+                             background: adminSection === m.id ? C.pinkDeep : 'transparent', color: adminSection === m.id ? C.white : C.plumDark }}>{m.l}</button>
+          ))}
+        </div>
+      </nav>
+
+      <main style={{ maxWidth: 1200, margin: '0 auto', padding: '24px 24px 32px' }}>
+        {/* 슈퍼바이저 자동완성 목록 (활성 슈퍼바이지 기준) */}
+        <datalist id="supervisor-list">
+          {(() => {
+            if (!activeSupervisee) return null;
+            const set = new Set();
+            if (activeSupervisee.mainSupervisor) set.add(activeSupervisee.mainSupervisor);
+            (activeSupervisee.supervisors || []).forEach(s => set.add(s));
+            (activeSupervisee.fieldworkLogs || []).forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            (activeSupervisee.supervisionLogs || []).forEach(l => { if (l.supervisor) set.add(l.supervisor); });
+            return Array.from(set).map(s => <option key={s} value={s} />);
+          })()}
+        </datalist>
+        {adminSection === 'ceu' && loggedInUser?.ceu && (
+          <CeuTab key={ceuKey} me={{ id: loggedInUser.id, name: loggedInUser.name || loggedInUser.user_id }} />
+        )}
+
+        {adminSection === 'users' && (
+          <AdminPage embedded currentUser={loggedInUser} onLogout={handleLogout} />
+        )}
+
+        {adminSection === 'records' && (
+          <div className="adm-wrap">
+            {/* 왼쪽: 사람 목록 */}
+            <aside className="adm-side" style={{ background: C.white, border: `1px solid ${C.pinkLight}`, borderRadius: 12, padding: 12 }}>
+              {(data.supervisees || []).length >= 2 && (
+                <button onClick={() => { setTab('overview'); if (window.innerWidth <= 820) setTimeout(() => document.getElementById('adm-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}
+                        style={{ width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: 6, borderRadius: 9, cursor: 'pointer', fontSize: 13.5, fontWeight: 700,
+                                 background: tab === 'overview' ? C.pinkSoft : C.pinkPale, color: C.plumDark, border: `1.5px solid ${tab === 'overview' ? C.pinkDeep : 'transparent'}` }}>
+                  👥 전체 한눈에
+                </button>
+              )}
+              {[
+                { label: '내가 슈퍼비전하는 수련생', list: (data.supervisees || []).filter(sv => !sv.ownerName) },
+                { label: '계정 있는 사용자 기록장', list: (data.supervisees || []).filter(sv => sv.ownerName) },
+              ].filter(g => g.list.length > 0).map(g => (
+                <div key={g.label}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: '#A88A93', margin: '10px 6px 6px' }}>{g.label}</div>
+                  {g.list.map(sv => {
+                    const ex = EXAM_DATA[sv.examType] || EXAM_DATA['QASP-S'];
+                    const fw = (sv.fieldworkLogs || []).reduce((acc, l) => acc + timeToHours(l.startTime, l.endTime), 0);
+                    const pct = Math.min(100, ex.total ? fw / ex.total * 100 : 0);
+                    const on = tab !== 'overview' && sv.id === data.activeSuperviseeId;
+                    return (
+                      <button key={sv.id} onClick={() => {
+                                update({ activeSuperviseeId: sv.id }); if (tab === 'overview') setTab('dashboard');
+                                // 휴대폰처럼 좁은 화면에서는 목록 아래 기록으로 바로 내려감
+                                if (window.innerWidth <= 820) setTimeout(() => document.getElementById('adm-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                              }}
+                              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: 4, borderRadius: 9, cursor: 'pointer',
+                                       background: on ? C.pinkSoft : 'transparent', border: `1.5px solid ${on ? C.pinkDeep : 'transparent'}` }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: '#5c4650' }}>{sv.name}</div>
+                        <div style={{ fontSize: 11.5, color: C.grayText, marginTop: 2 }}>{sv.examType} · {Math.round(fw).toLocaleString()} / {ex.total.toLocaleString()}hr</div>
+                        <div style={{ height: 5, background: '#F4E4E8', borderRadius: 3, marginTop: 6 }}>
+                          <div style={{ width: `${pct}%`, height: 5, borderRadius: 3, background: C.pinkDeep }} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              <button onClick={() => setShowManageSv(true)}
+                      style={{ width: '100%', marginTop: 10, padding: 9, fontSize: 12.5, fontWeight: 700, color: C.pinkDeep, background: C.white, border: `1.5px dashed ${C.pinkLight}`, borderRadius: 8, cursor: 'pointer' }}>
+                + 수련생 추가 · 관리
+              </button>
+              <div style={{ fontSize: 11, color: C.grayText, marginTop: 8, lineHeight: 1.5 }}>계정 있는 사람의 기록장은 👥 사용자 관리에서 만들어요.</div>
+            </aside>
+
+            {/* 오른쪽: 고른 사람의 기록 */}
+            <section id="adm-main" className="adm-main" style={{ background: C.white, border: `1px solid ${C.pinkLight}`, borderRadius: 12, padding: '18px 20px' }}>
+              {tab === 'overview' && (data.supervisees || []).length >= 2 ? (
+                <>
+                  <OverviewTab supervisees={data.supervisees} onSelect={(id) => { update({ activeSuperviseeId: id }); setTab('dashboard'); }} />
+                </>
+              ) : !activeSupervisee ? (
+                <EmptyStateNoSupervisee onAdd={() => setShowManageSv(true)} isAdmin hasCeu={false} onOpenCeu={() => {}} />
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <h2 style={{ margin: 0, fontSize: 19, color: '#5c4650' }}>{activeSupervisee.name} 님 기록장</h2>
+                    <span style={{ fontSize: 12, padding: '3px 9px', borderRadius: 12, fontWeight: 700, background: activeSupervisee.ownerName ? '#EEF4FB' : C.pinkPale, color: activeSupervisee.ownerName ? '#4F7099' : C.plumDark }}>
+                      {activeSupervisee.ownerName ? `${activeSupervisee.ownerName} 계정` : '내 수련생'}
+                    </span>
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <select value={activeSupervisee.examType} onChange={async (e) => {
+                        const newExam = e.target.value;
+                        const hasData = (activeSupervisee.fieldworkLogs || []).length > 0 || (activeSupervisee.supervisionLogs || []).length > 0;
+                        if (!hasData || await window.appConfirm(`시험을 ${newExam}로 변경하시겠습니까?\n\n• 기존 입력 데이터는 그대로 유지됩니다\n• 자격 기준(총 시간, Direct/Indirect 한도 등)만 바뀝니다`)) {
+                          changeSuperviseeExam(activeSupervisee.id, newExam);
+                        }
+                      }}
+                              style={{ padding: '7px 10px', fontSize: 12.5, fontWeight: 600, color: C.pinkDeep, background: C.inputBg, border: `1.5px solid ${C.pinkGold}`, borderRadius: 7, cursor: 'pointer', outline: 'none' }}>
+                        <option value="QBA">QBA · 2,000hr</option>
+                        <option value="QASP-S">QASP-S · 1,000hr</option>
+                      </select>
+                      <button onClick={exportExcel} title="QABA 제출용 엑셀 보고서 다운로드 (.xlsx)"
+                              style={{ padding: '7px 11px', fontSize: 12.5, fontWeight: 600, color: C.plumDark, background: C.pinkPale, border: `1px solid ${C.pinkLight}`, borderRadius: 7, cursor: 'pointer' }}>📊 엑셀</button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, borderBottom: `1px solid ${C.pinkLight}`, marginBottom: 18, overflowX: 'auto' }}>
+                    {[{ id: 'dashboard', l: '📊 대시보드' }, { id: 'monthly', l: '📄 월별 서식' }, { id: 'entry', l: '✏️ 직접 입력' }, { id: 'info', l: '📚 시험 정보' }].map(t => {
+                      const on = tab === t.id || (t.id === 'entry' && (tab === 'fieldwork' || tab === 'supervision'));
+                      return (
+                        <button key={t.id} onClick={() => setTab(t.id)}
+                                style={{ padding: '10px 16px', fontSize: 14, background: 'transparent', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                                         color: on ? C.pinkDeep : C.grayText, fontWeight: on ? 700 : 500, borderBottom: on ? `2.5px solid ${C.pinkDeep}` : '2.5px solid transparent' }}>{t.l}</button>
+                      );
+                    })}
+                  </div>
+          <>
+            {tab === 'dashboard' && <Dashboard activeSupervisee={activeSupervisee} stats={stats} exam={exam} updateActive={updateActive} />}
+            {tab === 'overview' && <OverviewTab supervisees={data.supervisees} onSelect={(id) => { update({ activeSuperviseeId: id }); setTab('dashboard'); }} />}
+            {tab === 'monthly' && (
+              <MonthlyLogsTab supervisee={activeSupervisee} showToast={showToast}
+                              onChanged={() => reloadAllData(loggedInUser.id, loggedInUser.name, loggedInUser.role, loggedInUser.ceu)} />
+            )}
+            {/* 직접 입력: 필드워크·슈퍼비전을 하나로 묶음 (서식 없이 몇 건만 넣을 때) */}
+            {(tab === 'entry' || tab === 'fieldwork' || tab === 'supervision') && (
+              <>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {[['fieldwork', '📋 필드워크'], ['supervision', '🎓 슈퍼비전']].map(([k, l]) => (
+                    <button key={k} onClick={() => setEntrySub(k)}
+                            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+                                     background: entrySub === k ? C.pinkDeep : C.white, color: entrySub === k ? C.white : C.plumDark,
+                                     border: `1.5px solid ${entrySub === k ? C.pinkDeep : C.pinkLight}` }}>{l}</button>
+                  ))}
+                  <span style={{ fontSize: 12, color: C.grayText, marginLeft: 6 }}>월별 서식 없이 몇 건만 넣을 때 쓰세요. 서식에서 들어온 기록도 여기서 보입니다.</span>
+                </div>
+                {entrySub === 'fieldwork' && <FieldworkLog activeSupervisee={activeSupervisee} exam={exam} updateActive={updateActive} />}
+                {entrySub === 'supervision' && <SupervisionLog activeSupervisee={activeSupervisee} updateActive={updateActive} />}
+              </>
+            )}
+            {tab === 'info' && <ExamInfoTab currentExam={activeSupervisee.examType} />}
+          </>
+                </>
+              )}
+            </section>
+          </div>
+        )}
+      </main>
+
+        </>
+      ) : (
+        <>
       <nav style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, display: 'flex', maxWidth: 1200, margin: '0 auto', padding: '0 24px', gap: 4, overflowX: 'auto' }}>
         {[
           { id: 'dashboard', l: '📊 대시보드' },
@@ -1265,6 +1384,9 @@ export default function App() {
           </>
         )}
       </main>
+
+        </>
+      )}
 
       <footer style={{ background: C.pinkPale, padding: '28px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.plumDark, marginBottom: 6 }}>© 검단ABA언어행동연구소 · All Rights Reserved</div>
@@ -1436,7 +1558,7 @@ function WelcomeCard({ examType, superviseeName }) {
         <span style={{ fontSize: 13, color: C.grayText }}>아래 3단계로 시작해보세요 ✨</span>
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-        <StartStep num="1" title="시험 종류 확인하기" desc="우측 상단에서 본인의 시험을 선택해주세요 (QBA / QASP-S 변경 가능)" />
+        <StartStep num="1" title="시험 종류 확인하기" desc="시험 종류 칸(QBA · 2,000hr / QASP-S · 1,000hr)에서 본인의 시험을 선택해주세요" />
         <StartStep num="2" title="슈퍼바이저 정보 적기" desc="아래 메인 슈퍼바이저 이름을 입력하면 자동완성에 도움이 돼요" />
         <StartStep num="3" title="한 달마다 서식 올리기" desc="📄 월별 서식 탭에 QABA 월별 서식을 올리면 시간을 읽어서 진행률이 자동으로 계산돼요 (몇 건만 넣을 땐 ✏️ 직접 입력)" />
       </div>
@@ -2207,7 +2329,7 @@ function FieldworkLog({ activeSupervisee, exam, updateActive }) {
         ① <strong>"+ 새 회기"</strong> 버튼을 눌러 카드를 추가하고<br/>
         ② 날짜, 시작/종료 시간을 입력해주세요 (<strong>빠른 버튼 +30분, +1시간</strong>으로 더 편하게!)<br/>
         ③ <strong>Direct(직접 치료)</strong> 시간만 입력하면 나머지는 자동으로 <strong>Indirect(간접 업무)</strong>로 계산돼요<br/>
-        <span style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>📌 매일 끝나고 바로 기록하면 잊지 않아요!</span>
+        <span style={{ fontSize: 11, color: C.grayText, fontStyle: 'italic' }}>📌 한 달 기록이 월별 서식에 다 있으면 📄 월별 서식 탭에서 한 번에 올리는 게 더 빨라요</span>
       </InfoBanner>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
@@ -3295,7 +3417,7 @@ function ExamInfoTab({ currentExam }) {
           <SimpleInfoRow label="└ Indirect" value="최소 1,200시간 (전체의 60% 이상) - 감독·계획·평가 등 간접 업무" />
           <SimpleInfoRow label="월별 시간 제한" value="최소 20시간 ~ 최대 140시간 (활발한 ABA 실무 필요)" />
           <SimpleInfoRow label="누적 기간" value="7년 이내" />
-          <SimpleInfoRow label="슈퍼비전" value="매월 그 달 필드워크 시간의 5% · 총 100시간 (2,000hr × 5%)" />
+          <SimpleInfoRow label="슈퍼비전" value="매월 그 달 필드워크 시간의 5% · 총 100시간 (2,000hr × 5%) · 월별 서식 기준 매월 최소 1시간은 대면 또는 실시간 화상" />
           <SimpleInfoRow label="└ 그룹 슈퍼비전" value="개별 슈퍼비전 기간 동안 최대 50%까지 가능" />
           <SimpleInfoRow label="시험" value="125문항 (100 채점+25 시범), 3시간" />
           <SimpleInfoRow label="응시료" value="$350 USD (재시험 $225)" />
@@ -3337,7 +3459,7 @@ function ExamInfoTab({ currentExam }) {
       <CollapsibleSection title="❓ 자주 묻는 질문 (FAQ)">
         <FAQItem
           q="필드워크 시간을 슈퍼바이저에게 어떻게 보고하나요?"
-          a="대시보드 하단의 '슈퍼바이저별' 요약(슈퍼바이저 2명 이상일 때 자동 표시)에서 누적 시간을 확인할 수 있고, 우측 상단 '📊 엑셀 내보내기'로 QABA 제출용 보고서를 받을 수 있습니다. 필요시 백업(JSON)도 함께 전달하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다."
+          a="대시보드 하단의 '슈퍼바이저별' 요약(슈퍼바이저 2명 이상일 때 자동 표시)에서 누적 시간을 확인할 수 있고, '📊 엑셀' 버튼으로 QABA 제출용 보고서를 받을 수 있습니다. 필요시 백업(JSON)도 함께 전달하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다."
         />
         <FAQItem
           q="슈퍼비전 5%는 매월마다 채워야 하나요?"
@@ -3568,7 +3690,7 @@ const delBtnStyle = { padding: '8px 12px', background: '#FFF0F0', border: '1px s
 // ============================================
 // 🔐 ADMIN PAGE (관리자 페이지 - 사용자 관리)
 // ============================================
-function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
+function AdminPage({ currentUser, onLogout, onSwitchToUserMode, embedded }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -3616,7 +3738,8 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
   };
 
   return (
-    <div style={{ fontFamily: '"Pretendard", "맑은 고딕", sans-serif', background: C.bg, minHeight: '100vh' }}>
+    <div style={embedded ? {} : { fontFamily: '"Pretendard", "맑은 고딕", sans-serif', background: C.bg, minHeight: '100vh' }}>
+      {!embedded && (<>
       {/* 헤더 */}
       <header style={{ background: C.white, borderBottom: `1px solid ${C.pinkLight}`, padding: '20px 0', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
@@ -3646,8 +3769,9 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
           </div>
         </div>
       </header>
+      </>)}
 
-      <main style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+      <main style={embedded ? {} : { maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
         {/* 요약 카드 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
           <SummaryBox label="전체 사용자" value={users.length} color={C.plumDark} icon="👥" />
@@ -3752,7 +3876,7 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
                         ) : stats && stats.superviseeCount === 0 ? (
                           // 기록장이 없는 사용자: 원장님이 바로 만들어 줄 수 있게
                           <button onClick={async () => {
-                            if (!await window.appConfirm(`'${u.name}' 계정에 수련 기록장을 만들까요?\n(만들면 원장님 화면 👤 고르는 칸의 '사용자 기록장'에 보입니다)`, '수련 기록장 만들기')) return;
+                            if (!await window.appConfirm(`'${u.name}' 계정에 수련 기록장을 만들까요?\n(만들면 🧑‍🎓 수련생 기록 왼쪽 목록의 '계정 있는 사용자 기록장'에 보입니다)`, '수련 기록장 만들기')) return;
                             const sv = await createSuperviseeFor(u.id, { name: u.name, examType: 'QASP-S' });
                             if (!sv) { await window.appAlert('기록장을 만들지 못했습니다'); return; }
                             setStatsCache(prev => { const n = { ...prev }; delete n[u.id]; return n; });
@@ -3826,9 +3950,11 @@ function AdminPage({ currentUser, onLogout, onSwitchToUserMode }) {
         )}
       </main>
 
-      <footer style={{ background: C.pinkPale, padding: '20px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.plumDark }}>© 검단ABA언어행동연구소 · All Rights Reserved</div>
-      </footer>
+      {!embedded && (
+        <footer style={{ background: C.pinkPale, padding: '20px 24px', textAlign: 'center', borderTop: `1px solid ${C.pinkLight}`, marginTop: 40 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.plumDark }}>© 검단ABA언어행동연구소 · All Rights Reserved</div>
+        </footer>
+      )}
 
       {/* 추가 모달 */}
       {showAddModal && (
@@ -4132,7 +4258,7 @@ function UserFormModal({ mode, initial, onClose, onSave }) {
           </AdminField>
 
           {!isEdit && form.role !== 'admin' && (
-            <AdminField label="쓸 것" hint="수련 기록장을 만들면 원장님 화면 👤 고르는 칸의 '사용자 기록장'에 바로 보입니다">
+            <AdminField label="쓸 것" hint="수련 기록장을 만들면 🧑‍🎓 수련생 기록 왼쪽 목록의 '계정 있는 사용자 기록장'에 바로 보입니다">
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.plumDark, cursor: 'pointer', marginBottom: 8 }}>
                 <input type="checkbox" checked={form.makeBook} onChange={e => setForm(p => ({ ...p, makeBook: e.target.checked }))} />
                 📋 수련 기록장 만들기 (수련 중인 사람)
@@ -4554,7 +4680,7 @@ function ManageSuperviseesModal({ supervisees, activeId, onAdd, onRemove, onRena
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: C.white, borderRadius: 12, maxWidth: 600, maxHeight: '85vh', width: '100%', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '20px 24px', borderBottom: `1px solid ${C.pinkLight}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ margin: 0, color: C.pinkDeep, fontSize: 20 }}>👥 슈퍼바이지 관리</h2>
+          <h2 style={{ margin: 0, color: C.pinkDeep, fontSize: 20 }}>👥 수련생(슈퍼바이지) 관리</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, color: C.grayText, cursor: 'pointer', padding: '4px 8px' }}>✕</button>
         </div>
         <div style={{ padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -4660,7 +4786,7 @@ function ManageSuperviseesModal({ supervisees, activeId, onAdd, onRemove, onRena
 
           <div style={{ padding: 12, background: '#FFF8E7', border: `1px solid ${C.pinkGold}`, borderRadius: 8, fontSize: 12, color: '#7A5538', lineHeight: 1.6 }}>
             💡 <strong>슈퍼바이저 모드</strong>: 한 슈퍼바이저가 여러 자격 준비자를 동시에 관리할 수 있어요. 
-            상단 드롭다운으로 슈퍼바이지를 전환하면, 각자의 필드워크·슈퍼비전 기록을 따로 관리합니다.
+            왼쪽 목록에서 사람을 고르면, 각자의 필드워크·슈퍼비전 기록을 따로 관리합니다.
           </div>
         </div>
       </div>
@@ -4865,18 +4991,18 @@ function GuideModal({ onClose }) {
             <strong style={{ color: C.pinkDeep, fontSize: 14 }}>👋 환영합니다!</strong>
             <p style={{ margin: '6px 0 0 0', fontSize: 13 }}>
               이 앱은 <strong>QABA (QBA·QASP-S) 자격 준비</strong>와 자격을 딴 뒤의 <strong>연수시간(CEU) 관리</strong>를 도와드려요.<br/>
-              매일 기록만 잘 해두면 자동으로 진행률·5% 충족 여부를 계산해드립니다.
+              월별 서식을 올리거나 기록을 넣어 두면 진행률·5% 충족 여부를 자동으로 계산해드립니다.
             </p>
           </div>
 
           <h3 style={{ color: C.plumDark }}>📌 시작하기 (3단계)</h3>
           <ol>
-            <li><strong>시험 종류 선택</strong> - 우측 상단에서 본인의 시험 선택 (QBA / QASP-S)</li>
+            <li><strong>시험 종류 선택</strong> - 시험 종류 칸에서 본인의 시험 선택 (QBA / QASP-S)</li>
             <li><strong>슈퍼바이저 정보 입력</strong> - 대시보드 상단에서 메인 슈퍼바이저 이름 입력 (이후 자동완성됨)</li>
             <li><strong>한 달마다 기록</strong> - 📄 월별 서식 탭에 QABA 월별 서식(PDF·사진·Word)을 올리면 날짜별 시간을 읽어 넣어요. 몇 건만 넣을 땐 ✏️ 직접 입력</li>
           </ol>
           <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic' }}>
-            💡 회기 끝나고 바로 기록하는 습관이 가장 정확해요!
+            💡 한 달 기록이 월별 서식에 다 있으면 📄 월별 서식으로 올리는 게 가장 빨라요!
           </p>
 
           <h3 style={{ color: C.plumDark }}>🎓 자격 기준 (QABA 공식)</h3>
@@ -4927,7 +5053,7 @@ function GuideModal({ onClose }) {
           </ul>
 
           <h3 style={{ color: C.plumDark }}>📊 QABA 제출용 보고서</h3>
-          <p>우측 상단 <strong>📊 엑셀 내보내기</strong> 버튼을 누르면 QABA 제출용 보고서를 다운로드할 수 있어요.<br/>
+          <p><strong>📊 엑셀</strong> 버튼을 누르면 QABA 제출용 보고서를 다운로드할 수 있어요.<br/>
           포함 내용: 필드워크 전체 기록 · 슈퍼비전 전체 기록 · 슈퍼바이저별 요약 · 월별 요약</p>
           <p style={{ fontSize: 12, color: C.grayText, fontStyle: 'italic' }}>
             ※ 슈퍼바이저나 자격증 신청 시 활용하세요. 공식 인증은 QABA 온라인 시스템에서 슈퍼바이저가 직접 진행해야 합니다.
@@ -4946,7 +5072,7 @@ function GuideModal({ onClose }) {
           <p>자격 갱신에 필요한 연수시간(CEU)을 관리하는 탭입니다. 검단ABA가 켜 준 계정에만 보여요.</p>
           <ul>
             <li><strong>보유 자격 설정</strong>: 가진 자격(BCBA·QBA·QASP-S·KBA 등)을 고르면 자격별 카드가 생겨요</li>
-            <li><strong>이수증 인식</strong>: 이수증 사진이나 PDF를 올리면 강의명·날짜·시간·인정 자격을 자동으로 읽어요</li>
+            <li><strong>📷 이수증 올리기</strong>: 첫 화면의 버튼을 눌러 이수증 사진이나 PDF를 고르면 강의명·날짜·시간·인정 자격을 자동으로 읽어요</li>
             <li><strong>한 번에 여러 자격</strong>: 이수증 한 장이 여러 자격에 인정되면 한 번만 등록해도 각 자격에 함께 들어가요</li>
             <li><strong>부족분·D-day</strong>: 자격마다 남은 시간, 항목별 부족분, 갱신까지 남은 날짜를 보여 줘요</li>
             <li><strong>📄 PDF 요약</strong>: 자격별 이수 현황을 한 장으로 출력할 수 있어요</li>

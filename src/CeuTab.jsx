@@ -31,7 +31,7 @@ const RELAY_KEY = CEU_ANON_KEY;
 
 const CATS = [
   { key: "ethics", label: "윤리" },
-  { key: "superv", label: "수퍼비전" },
+  { key: "superv", label: "슈퍼비전" },
   { key: "general", label: "일반" },
   { key: "trauma", label: "트라우마 케어" },
   { key: "comorbid", label: "동반질환" },
@@ -54,23 +54,23 @@ function catsForWithData(cert, records) {
 
 const DEFAULT_CERTS = {
   BCBA: { org: "BACB", cycle: 24, total: 32, req: { ethics: 4, superv: 3, general: 0 },
-    note: "수퍼비전 3시간은 RBT·BCaBA·수련생을 감독하는 경우에만 필수. 2027-01-01 이후 시작 주기부터 수퍼비전 4시간으로 상향. CEU는 BACB 승인(ACE) 제공기관 이수분만 인정.", src: "bacb.com BCBA Handbook",
+    note: "슈퍼비전 3시간은 RBT·BCaBA·수련생을 감독하는 경우에만 필수. 2027-01-01 이후 시작 주기부터 슈퍼비전 4시간으로 상향. CEU는 BACB 승인(ACE) 제공기관 이수분만 인정.", src: "bacb.com BCBA Handbook",
     firstExtra: null,
-    training: "감독을 하려면 인증 전(최대 180일 이내)에 8시간 수퍼비전 트레이닝을 최초 1회 이수해야 합니다. (갱신 CEU와 별개)" },
+    training: "감독을 하려면 인증 전(최대 180일 이내)에 8시간 슈퍼비전 트레이닝을 최초 1회 이수해야 합니다. (갱신 CEU와 별개)" },
   "ABAS-1": { org: "한국 KACBA", cycle: 24, total: 32, req: { ethics: 4, superv: 3, general: 0 },
-    note: "응용행동분석전문가 1급. 윤리 4시간·수퍼비전 3시간 의무. 한 과목을 윤리·수퍼비전 이중 계산 불가.", src: "abas.co.kr 자격 유지",
+    note: "응용행동분석전문가 1급. 윤리 4시간·슈퍼비전 3시간 의무. 한 과목을 윤리·슈퍼비전 이중 계산 불가.", src: "abas.co.kr 자격 유지",
     firstExtra: null,
-    training: "수퍼바이저 자격훈련을 최초 1회 이수해야 자격이 발급됩니다(BACB 8시간 트레이닝으로 대체 가능). 이후에는 수퍼비전 3시간만. (갱신 CEU와 별개)" },
+    training: "슈퍼바이저 자격훈련을 최초 1회 이수해야 자격이 발급됩니다(BACB 8시간 트레이닝으로 대체 가능). 이후에는 슈퍼비전 3시간만. (갱신 CEU와 별개)" },
   QBA: { org: "QABA", cycle: 24, total: 32, req: { ethics: 3, superv: 8, general: 0 },
-    note: "수퍼비전은 대면/실시간 온라인 25% 이상 수강.", src: "qababoard.com Renewal",
+    note: "슈퍼비전은 대면/실시간 온라인 25% 이상 수강.", src: "qababoard.com Renewal",
     firstExtra: { trauma: 2, comorbid: 2 },
     training: null },
   "QASP-S": { org: "QABA", cycle: 24, total: 20, req: { ethics: 2, superv: 0, general: 0 },
-    note: "총 20시간·윤리 2시간. 수퍼비전은 CEU가 아니라 직접케어 5% 감독(별개 실무요건). 수퍼바이저 자격 유지 위해 8시간 수퍼비전 코스워크 필요.", src: "qababoard.com Renewal",
+    note: "총 20시간·윤리 2시간. 슈퍼비전은 CEU가 아니라 직접케어 5% 감독(별개 실무요건). 슈퍼바이저 자격 유지 위해 8시간 슈퍼비전 코스워크 필요.", src: "qababoard.com Renewal",
     firstExtra: { trauma: 2 },
     training: null },
   KBA: { org: "한국행동분석학회", cycle: 36, total: 36, req: { ethics: 0, superv: 0, general: 0 },
-    note: "3년마다 갱신, 3년간 36시간 이상(50분 단위). 윤리·수퍼비전 세부 의무시간 규정 없음. 갱신 기산일=취득일.", src: "kabac.or.kr 자격 유지 안내",
+    note: "3년마다 갱신, 3년간 36시간 이상(50분 단위). 윤리·슈퍼비전 세부 의무시간 규정 없음. 갱신 기산일=취득일.", src: "kabac.or.kr 자격 유지 안내",
     firstExtra: null,
     training: null },
 };
@@ -275,7 +275,7 @@ function PickCerts({ me, onDone }) {
           </div>
           <button className="btn btn-pk" style={{ width: "100%", marginTop: 18, padding: "11px 0", opacity: picked.length ? 1 : 0.5 }}
             disabled={!picked.length} onClick={() => onDone(picked)}>시작하기</button>
-          <div style={{ fontSize: 11.5, color: MUTE, marginTop: 10, textAlign: "center" }}>나중에 설정에서 언제든 바꿀 수 있어요.</div>
+          <div style={{ fontSize: 11.5, color: MUTE, marginTop: 10, textAlign: "center" }}>나중에 보유 자격 설정에서 언제든 바꿀 수 있어요.</div>
         </div>
       </div>
     </div>
@@ -364,8 +364,9 @@ function printReport(me, data, cards) {
 }
 
 /* ---------------- 대시보드 ---------------- */
-function Dashboard({ me, data, onOpen }) {
+function Dashboard({ me, data, onOpen, onUpload }) {
   const [showHelp, setShowHelp] = useState(true);
+  const upRef = useRef(null);
   const cards = me.myCerts.map((n) => {
     const cert = data.certs[n];
     const sums = sumForCert(data.records, n);
@@ -418,10 +419,13 @@ function Dashboard({ me, data, onOpen }) {
       <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 20, fontWeight: 800 }}>한눈에 보기</div>
-          <div style={{ fontSize: 13, color: MUTE, marginTop: 3 }}>보유 자격의 이수 현황과 갱신까지 남은 기간이에요. <b style={{ color: PKD }}>카드를 누르면</b> 이수증 입력·관리 화면으로 이동합니다.</div>
+          <div style={{ fontSize: 13, color: MUTE, marginTop: 3 }}>보유 자격의 이수 현황과 갱신까지 남은 기간이에요. 새 이수증은 <b style={{ color: PKD }}>📷 이수증 올리기</b>, 지난 이수증은 <b style={{ color: PKD }}>카드를 누르면</b> 볼 수 있어요.</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => printReport(me, data, cards)} className="btn btn-pk" style={{ padding: "8px 14px", fontSize: 13 }}>📄 PDF 요약</button>
+          <button onClick={() => upRef.current?.click()} className="btn btn-pk" style={{ padding: "8px 14px", fontSize: 13 }}>📷 이수증 올리기</button>
+          <input ref={upRef} type="file" accept="image/*,application/pdf,.pdf" style={{ display: "none" }}
+                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onUpload(f); }} />
+          <button onClick={() => printReport(me, data, cards)} className="btn btn-ghost" style={{ padding: "8px 14px", fontSize: 13 }}>📄 PDF 요약</button>
           {!showHelp && (
             <button onClick={() => setShowHelp(true)} className="btn btn-ghost" style={{ padding: "8px 12px", fontSize: 12.5 }}>사용법 보기</button>
           )}
@@ -437,7 +441,7 @@ function Dashboard({ me, data, onOpen }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
             {[
               ["① 자격 카드 열기", "가진 자격 카드를 누르면 상세 화면에서 이수증을 넣고 관리할 수 있어요."],
-              ["② 이수증 인식", "이수증 사진이나 PDF를 올리면 강의명·날짜·시간·항목과 인정 자격을 자동으로 읽어줘요. 확인 후 저장하면 끝."],
+              ["② 이수증 인식", "위의 📷 이수증 올리기를 눌러 사진이나 PDF를 고르면 강의명·날짜·시간·항목과 인정 자격을 자동으로 읽어줘요. 확인 후 저장하면 끝."],
               ["③ 하나로 여러 자격", "이수증 한 건이 BCBA·QBA처럼 여러 자격에 인정되면 한 번만 등록해도 각 자격에 함께 반영돼요."],
               ["④ 부족분·D-day 확인", "각 카드에서 남은 시간, 항목별 부족분, 갱신까지 남은 날짜(D-day)를 한눈에 볼 수 있어요."],
             ].map(([t, d]) => (
@@ -501,7 +505,7 @@ function Dashboard({ me, data, onOpen }) {
 }
 
 /* ---------------- 자격별 상세 (이수증 관리) ---------------- */
-function Detail({ cert, records, onBack, onChangeCert, setRecords, activeCert, allMyCerts, certsMap, onStartNewCycle }) {
+function Detail({ cert, records, onBack, onChangeCert, setRecords, activeCert, allMyCerts, certsMap, onStartNewCycle, pendingReceipt, clearPendingReceipt }) {
   const [showHistory, setShowHistory] = useState(false);
   const [confirmCycle, setConfirmCycle] = useState(false);
   const renewalDate = useMemo(() => addMonths(cert.acquired, cert.cycle), [cert.acquired, cert.cycle]);
@@ -571,7 +575,7 @@ function Detail({ cert, records, onBack, onChangeCert, setRecords, activeCert, a
           <div style={{ marginTop: 10, fontSize: 12.5, background: PKL, border: `1px solid ${LINE}`, borderRadius: 10, padding: "9px 12px", lineHeight: 1.5 }}>
             <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
               <input type="checkbox" checked={!!cert.trainingDone} onChange={(e) => onChangeCert({ trainingDone: e.target.checked })} style={{ marginTop: 2 }} />
-              <span><b style={{ color: PKD }}>1회성 수퍼바이저 트레이닝</b> — {cert.training} {cert.trainingDone ? "✓ 이수함" : ""}</span>
+              <span><b style={{ color: PKD }}>1회성 슈퍼바이저 트레이닝</b> — {cert.training} {cert.trainingDone ? "✓ 이수함" : ""}</span>
             </label>
           </div>
         )}
@@ -611,7 +615,8 @@ function Detail({ cert, records, onBack, onChangeCert, setRecords, activeCert, a
       </div>
 
       <BaselineHours key={cert.name + ":" + (cert.firstRenewal ? "1" : "0")} cert={cert} records={records} setRecords={setRecords} />
-      <RecordManager activeCert={activeCert} records={records} setRecords={setRecords} myCerts={allMyCerts} certsMap={certsMap} />
+      <RecordManager activeCert={activeCert} records={records} setRecords={setRecords} myCerts={allMyCerts} certsMap={certsMap}
+        pendingReceipt={pendingReceipt} clearPendingReceipt={clearPendingReceipt} />
 
       {/* 지난 주기 이력 */}
       {cert.history && cert.history.length > 0 && (
@@ -772,7 +777,7 @@ function BaselineHours({ cert, records, setRecords }) {
 }
 
 /* ---------------- 이수증 관리 ---------------- */
-function RecordManager({ activeCert, records, setRecords, myCerts, certsMap }) {
+function RecordManager({ activeCert, records, setRecords, myCerts, certsMap, pendingReceipt, clearPendingReceipt }) {
   const certList = (myCerts && myCerts.length) ? CERT_NAMES.filter((n) => myCerts.includes(n)) : CERT_NAMES;
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -837,7 +842,7 @@ function RecordManager({ activeCert, records, setRecords, myCerts, certsMap }) {
 자격증 후보: BCBA(BACB), ABAS-1(한국 KACBA), QBA(QABA), QASP-S(QABA), KBA(한국행동분석학회). 이수증에 인정 자격 문구가 있으면 그 자격들에 인정됩니다.
 다음 JSON만 출력(설명·코드블록 금지): {"title":"강의명","date":"YYYY-MM-DD","applies":[{"cert":"BCBA","hours":숫자,"cat":"ethics|superv|general|trauma|comorbid"}]}
 - 같은 자격이라도 윤리·일반처럼 항목별 시간이 나뉘어 있으면 항목마다 applies에 따로 넣으세요(예: QBA 일반 3, QBA 윤리 1).
-- cat: 윤리=ethics, 수퍼비전=superv, 트라우마 케어/트라우마 기반 케어=trauma, 동반질환/다중진단=comorbid, 그 외=general. 인정 자격 못찾으면 applies는 빈 배열. 날짜는 YYYY-MM-DD.`;
+- cat: 윤리=ethics, 수퍼비전·슈퍼비전=superv, 트라우마 케어/트라우마 기반 케어=trauma, 동반질환/다중진단=comorbid, 그 외=general. 인정 자격 못찾으면 applies는 빈 배열. 날짜는 YYYY-MM-DD.`;
       // 로그인한 사람만 AI를 쓸 수 있게 내 로그인 표를 실어 보냄 (공개 열쇠로는 서버가 거절)
       const loginToken = await getLoginToken();
       if (!loginToken) throw new Error("로그인 시간이 지났어요. 로그아웃 후 다시 로그인해 주세요.");
@@ -870,6 +875,11 @@ function RecordManager({ activeCert, records, setRecords, myCerts, certsMap }) {
       setErrMsg(err.message || "인식에 실패했습니다. 직접 입력해주세요.");
     } finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
   };
+
+  // 한눈에 보기의 📷 이수증 올리기로 고른 파일이 있으면 바로 인식
+  useEffect(() => {
+    if (pendingReceipt) { const f = pendingReceipt; clearPendingReceipt && clearPendingReceipt(); onFile(f); }
+  }, [pendingReceipt]);
 
   const exportCSV = () => {
     const rows = [["강의명", "날짜", ...CERT_NAMES.flatMap((n) => [`${n} 시간`, `${n} 항목`])]];
@@ -1337,6 +1347,8 @@ export default function CeuTab({ me }) {
     persist({ ...data, certs: { ...data.certs, [name]: newCert }, records: nextRecords });
   };
   const goDetail = (name) => { setActiveCert(name); setScreen("detail"); };
+  // 한눈에 보기에서 고른 이수증 파일 → 상세 화면에서 바로 인식
+  const [pendingReceipt, setPendingReceipt] = useState(null);
 
   // 예전 CEU 앱에서 가져오기
   const [showImport, setShowImport] = useState(false);
@@ -1403,6 +1415,11 @@ export default function CeuTab({ me }) {
 
       {data && screen !== "loading" && screen !== "pickCerts" && (
         <>
+          <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "#F4F0FA", border: "1px solid #E2D8F0", color: "#5B4A7A", fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 16 }}>🔒</span>
+            <b>{me.name} 님의 연수시간</b>
+            <span style={{ color: MUTE }}>· 로그인한 본인 것만 보여요. 수련시간 기록장(슈퍼바이지)과는 따로예요.</span>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {subBtn("dashboard", "한눈에 보기")}
             {subBtn("settings", "보유 자격 설정")}
@@ -1421,14 +1438,16 @@ export default function CeuTab({ me }) {
             <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "#EAF7F0", color: OK, fontWeight: 700, fontSize: 13.5 }}>{importMsg}</div>
           )}
           {screen === "dashboard" && (
-            <Dashboard me={{ ...me, myCerts: data.myCerts }} data={data} onOpen={goDetail} />
+            <Dashboard me={{ ...me, myCerts: data.myCerts }} data={data} onOpen={goDetail}
+              onUpload={(f) => { setPendingReceipt(f); goDetail(data.myCerts[0]); }} />
           )}
           {screen === "detail" && activeCert && data.certs[activeCert] && (
             <Detail cert={data.certs[activeCert]} records={data.records}
               onBack={() => setScreen("dashboard")}
               onChangeCert={(patch) => updateCert(activeCert, patch)}
               setRecords={setRecords} activeCert={activeCert} allMyCerts={data.myCerts} certsMap={data.certs}
-              onStartNewCycle={() => startNewCycle(activeCert)} />
+              onStartNewCycle={() => startNewCycle(activeCert)}
+              pendingReceipt={pendingReceipt} clearPendingReceipt={() => setPendingReceipt(null)} />
           )}
           {screen === "settings" && (
             <Settings myCerts={data.myCerts} onSave={(picked) => finishPickCerts(picked)} />
